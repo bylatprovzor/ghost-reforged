@@ -17,7 +17,7 @@ pub enum TransportError {
     Json(#[from] serde_json::Error),
 }
 
-pub struct Client(WebSocket<TcpStream>);
+pub struct Client(WebSocket<TcpStream>, Duration);
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
@@ -40,7 +40,7 @@ impl Client {
                 let _ = socket
                     .get_ref()
                     .set_read_timeout(Some(Duration::from_millis(250)));
-                return Ok(Self(socket));
+                return Ok(Self(socket, Duration::from_millis(250)));
             }
         }
         Err(TransportError::Connect)
@@ -79,6 +79,20 @@ impl Client {
         }
     }
 
+    pub(crate) fn receive_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<Value>, TransportError> {
+        if timeout != self.1 {
+            self.0
+                .get_ref()
+                .set_read_timeout(Some(timeout))
+                .map_err(|_| TransportError::Disconnected)?;
+            self.1 = timeout;
+        }
+        self.receive()
+    }
+
     /// Drain queued callbacks without paying the normal idle polling delay.
     pub fn receive_available(&mut self) -> Result<Option<Value>, TransportError> {
         self.0
@@ -88,7 +102,7 @@ impl Client {
         let received = self.receive();
         self.0
             .get_ref()
-            .set_read_timeout(Some(Duration::from_millis(250)))
+            .set_read_timeout(Some(self.1))
             .map_err(|_| TransportError::Disconnected)?;
         received
     }

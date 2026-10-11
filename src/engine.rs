@@ -4,6 +4,8 @@ use crate::{
     protocol::{self, Command, Lobby, OBSERVER_TEAM},
 };
 use serde_json::{Value, json};
+mod start;
+use start::StartRoster;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Phase {
@@ -35,7 +37,7 @@ pub struct Engine {
     empty_since: Option<u64>,
     move_sent: Option<u64>,
     provider_ready: bool,
-    manual_population: Option<usize>,
+    start: Option<StartRoster>,
     countdown_locked: bool,
     start_confirmed: bool,
     menu_required: bool,
@@ -58,7 +60,7 @@ impl Engine {
             empty_since: None,
             move_sent: None,
             provider_ready: false,
-            manual_population: None,
+            start: None,
             countdown_locked: false,
             start_confirmed: false,
             menu_required: false,
@@ -269,26 +271,24 @@ impl Engine {
             "LobbyCountdown" if self.owned => {
                 if payload["details"]["countdownActive"] == true {
                     if matches!(self.phase, Phase::Lobby | Phase::Countdown(_)) {
-                        self.manual_population = self
-                            .latest
-                            .as_ref()
-                            .map(|(lobby, _)| lobby.occupied_players());
-                        self.phase = Phase::Starting(now);
+                        self.begin_start(now, true);
                     }
                     self.countdown_locked |= payload["details"]["countdownLocked"] == true;
                 }
                 if payload["details"]["countdownActive"] == false
                     && matches!(self.phase, Phase::Starting(_))
                 {
-                    // Native countdown completion precedes the loading-screen
-                    // callback, which may be delayed or never reach the UI.
-                    self.start_confirmed |= self.countdown_locked;
-                    if !self.countdown_locked {
+                    // LobbyCancel is accepted even after the native UI locks.
+                    // Its inactive callback is an acknowledgement, not a start.
+                    let cancelled = self.start.as_ref().is_some_and(|s| s.cancel_requested);
+                    self.start_confirmed |= self.countdown_locked && !cancelled;
+                    if !self.countdown_locked || cancelled {
                         self.cancelled_roster = self
                             .latest
                             .as_ref()
                             .map(|(lobby, _)| lobby.start_signature());
-                        self.manual_population = None;
+                        self.start = None;
+                        self.countdown_locked = false;
                         self.phase = Phase::Lobby;
                     } else if self.config.leave_on_load
                         && self.config.host_mode == HostMode::Observer
@@ -300,7 +300,13 @@ impl Engine {
                 }
             }
             "SetGlueScreen" if self.owned => match payload["screen"].as_str() {
-                Some("LOADING_SCREEN") if matches!(self.phase, Phase::Starting(_)) => {
+                Some("LOADING_SCREEN")
+                    if matches!(self.phase, Phase::Starting(_))
+                        || (self.cancelled_roster.is_some()
+                            && matches!(self.phase, Phase::Lobby | Phase::Countdown(_))) =>
+                {
+                    // Loading remains authoritative if cancellation raced with
+                    // the final native transition instead of being accepted.
                     self.start_confirmed = true;
                     if self.config.leave_on_load
                         && self.config.host_mode == HostMode::Observer
@@ -390,11 +396,7 @@ impl Engine {
 
     pub fn start_now(&mut self, now: u64) -> Vec<Command> {
         if self.can_start(now) {
-            self.cancelled_roster = None;
-            self.manual_population = self.owned_lobby(now).map(Lobby::occupied_players);
-            self.countdown_locked = false;
-            self.start_confirmed = false;
-            self.phase = Phase::Starting(now);
+            self.begin_start(now, true);
             vec![Command::empty("LobbyStart")]
         } else {
             Vec::new()
@@ -452,7 +454,7 @@ impl Engine {
 
     fn release(&mut self, now: u64) {
         self.provider_ready = false;
-        self.manual_population = None;
+        self.start = None;
         self.countdown_locked = false;
         self.start_confirmed = false;
         self.cancelled_roster = None;
@@ -512,6 +514,13 @@ impl Engine {
             self.phase = Phase::Lobby;
             return Vec::new();
         }
+        if self
+            .start
+            .as_ref()
+            .is_some_and(|start| start.cancel_requested)
+        {
+            return Vec::new();
+        }
         let Some(local) = lobby.local() else {
             return Vec::new();
         };
@@ -532,22 +541,22 @@ impl Engine {
                 json!({"slot":local.slot,"team":OBSERVER_TEAM}),
             )];
         }
-        let enough = if let Some(population) = self.manual_population {
-            lobby.occupied_players() >= population
-        } else {
-            if self.config.require_full {
-                lobby.humans(self.config.count_host) > 0 && lobby.full()
-            } else {
-                lobby.humans(self.config.count_host) >= self.config.min_players as usize
-            }
-        };
+        let enough = self.start.as_ref().is_none_or(|start| start.intact(lobby))
+            && (self.start.as_ref().is_some_and(|start| start.manual)
+                || if self.config.require_full {
+                    lobby.humans(self.config.count_host) > 0 && lobby.full()
+                } else {
+                    lobby.humans(self.config.count_host) >= self.config.min_players as usize
+                });
         if !enough {
-            self.cancelled_roster = None;
             if matches!(self.phase, Phase::Starting(_)) {
-                self.phase = Phase::Lobby;
-                self.manual_population = None;
+                if let Some(start) = &mut self.start {
+                    start.cancel_requested = true;
+                }
+                // Remain Starting until Warcraft acknowledges cancellation.
                 return vec![Command::empty("LobbyCancel")];
             }
+            self.cancelled_roster = None;
             self.phase = Phase::Lobby;
             if let Some(empty_since) = self.empty_since
                 && self.config.empty_rehost_seconds > 0
@@ -562,8 +571,7 @@ impl Engine {
             match self.phase {
                 Phase::Lobby => self.phase = Phase::Countdown(now + self.config.countdown_seconds),
                 Phase::Countdown(until) if now >= until => {
-                    self.countdown_locked = false;
-                    self.phase = Phase::Starting(now);
+                    self.begin_start(now, false);
                     // The game itself performs its authoritative map/readiness validation.
                     return vec![Command::empty("LobbyStart")];
                 }

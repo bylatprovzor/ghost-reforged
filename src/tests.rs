@@ -8,6 +8,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{net::TcpListener, path::PathBuf, thread, time::Duration};
 
+mod countdown;
 mod lifecycle;
 mod recovery;
 mod session;

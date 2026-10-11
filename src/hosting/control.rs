@@ -1,5 +1,33 @@
 use super::*;
 
+pub(super) fn chat_command(
+    engine: &Engine,
+    chat: &mut crate::commands::LobbyCommands,
+    event: Option<&Value>,
+    identity_ok: bool,
+    now: u64,
+) -> crate::commands::Outcome {
+    use crate::commands::ChatCommand;
+    if !matches!(
+        engine.phase,
+        Phase::Lobby | Phase::Countdown(_) | Phase::Starting(_)
+    ) {
+        chat.observe(None, now);
+        return Default::default();
+    }
+    chat.observe(engine.owned_lobby(now), now);
+    let Some(event) = event.filter(|_| identity_ok) else {
+        return Default::default();
+    };
+    let mut settings = engine.config.commands.clone();
+    if matches!(engine.phase, Phase::Starting(_)) {
+        settings
+            .0
+            .retain(|c| matches!(c, ChatCommand::Help | ChatCommand::Players));
+    }
+    chat.handle(event, &settings, now)
+}
+
 pub(super) fn dispatch(
     engine: &mut Engine,
     event: Option<&Value>,

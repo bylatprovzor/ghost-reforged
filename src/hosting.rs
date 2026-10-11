@@ -201,7 +201,9 @@ fn run(
         let event = if let Some(event) = pending.pop_front() {
             Some(event)
         } else {
-            client.receive().map_err(|e| e.to_string())?
+            client
+                .receive_with_timeout(snapshot_interval(&engine).min(Duration::from_millis(250)))
+                .map_err(|e| e.to_string())?
         };
         if event.as_ref().is_some_and(|e| {
             e["messageType"] == "GameLobbySetup" && !HostIdentity::matches(&e["payload"])
@@ -299,23 +301,16 @@ fn run(
                 start_requested = None;
             }
         }
-        if matches!(engine.phase, Phase::Lobby | Phase::Countdown(_)) {
-            chat.observe(engine.owned_lobby(now), now);
-            if identity_ok && let Some(event) = &event {
-                let outcome = chat.handle(event, &engine.config.commands, now);
-                if let Some(line) = outcome.activity {
-                    let _ = tx.send(Event::Activity(Activity::Command(line)));
-                }
-                commands.extend(outcome.reply);
-                if let Some(target) = outcome.kick {
-                    kick_requested = Some((target, now, kick::RefreshGate::default()));
-                }
-                if outcome.start {
-                    commands.extend(engine.start_now(now));
-                }
-            }
-        } else {
-            chat.observe(None, now);
+        let outcome = control::chat_command(&engine, &mut chat, event.as_ref(), identity_ok, now);
+        if let Some(line) = outcome.activity {
+            let _ = tx.send(Event::Activity(Activity::Command(line)));
+        }
+        commands.extend(outcome.reply);
+        if let Some(target) = outcome.kick {
+            kick_requested = Some((target, now, kick::RefreshGate::default()));
+        }
+        if outcome.start {
+            commands.extend(engine.start_now(now));
         }
         for event in activity.observe(
             &engine,
@@ -447,7 +442,7 @@ fn run(
             }
             return Err(reason.clone());
         }
-        if requested.elapsed() >= Duration::from_secs(engine.config.snapshot_interval_seconds) {
+        if requested.elapsed() >= snapshot_interval(&engine) {
             if engine.wants_snapshot() {
                 client
                     .send("SendGameLobbySetup", json!({}))
@@ -459,6 +454,14 @@ fn run(
             }
             requested = Instant::now();
         }
+    }
+}
+
+fn snapshot_interval(engine: &Engine) -> Duration {
+    if matches!(engine.phase, Phase::Countdown(_) | Phase::Starting(_)) {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_secs(engine.config.snapshot_interval_seconds)
     }
 }
 

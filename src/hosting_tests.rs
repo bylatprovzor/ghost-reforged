@@ -52,6 +52,86 @@ fn ready(occupied: bool) -> Engine {
 }
 
 #[test]
+fn countdown_rosters_are_refreshed_without_waiting_for_the_idle_poll_interval() {
+    let mut engine = ready(true);
+    assert_eq!(snapshot_interval(&engine), Duration::from_secs(2));
+    engine.phase = Phase::Countdown(5);
+    assert_eq!(snapshot_interval(&engine), Duration::from_millis(50));
+    engine.start_now(1);
+    assert_eq!(snapshot_interval(&engine), Duration::from_millis(50));
+    engine.phase = Phase::InGame;
+    assert_eq!(snapshot_interval(&engine), Duration::from_secs(2));
+}
+
+#[test]
+fn help_and_counts_remain_available_during_native_countdown_without_accepting_votes() {
+    let mut engine = ready(true);
+    let mut setup = lobby(true);
+    setup["payload"]["players"][0]["name"] = json!("");
+    engine.on_event(&setup, 1);
+    engine.start_now(1);
+    let mut chat = crate::commands::LobbyCommands::default();
+    for (offset, command) in [
+        "?help",
+        "?players",
+        "?votestart",
+        "?votecancel",
+        "?votekick Player",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let message = event(
+            "ChatMessage",
+            json!({"message":{
+                "source":"gameChat","sender":"Player","content":command
+            }}),
+        );
+        let outcome =
+            control::chat_command(&engine, &mut chat, Some(&message), true, 2 + offset as u64);
+        assert!(!outcome.start && outcome.kick.is_none());
+        assert_eq!(outcome.reply.is_some(), offset < 2, "{command}");
+        if command == "?help" {
+            let reply = outcome.reply.unwrap();
+            let content = reply.payload["content"].as_str().unwrap();
+            assert!(content.starts_with("Commands: "));
+            assert!(content.contains("?help") && content.contains("?players"));
+            assert!(!content.contains("?votestart"));
+        }
+    }
+    let message = event(
+        "ChatMessage",
+        json!({"message":{
+            "source":"gameChat","sender":"Player","content":"?help"
+        }}),
+    );
+    assert!(
+        control::chat_command(&engine, &mut chat, Some(&message), false, 7)
+            .reply
+            .is_none()
+    );
+    engine
+        .config
+        .commands
+        .set(crate::commands::ChatCommand::Help, false);
+    assert!(
+        control::chat_command(&engine, &mut chat, Some(&message), true, 7)
+            .reply
+            .is_none()
+    );
+    engine
+        .config
+        .commands
+        .set(crate::commands::ChatCommand::Help, true);
+    engine.phase = Phase::InGame;
+    assert!(
+        control::chat_command(&engine, &mut chat, Some(&message), true, 7)
+            .reply
+            .is_none()
+    );
+}
+
+#[test]
 fn a_departure_received_with_start_prevents_the_start_request() {
     let mut engine = ready(true);
     let commands = dispatch(
@@ -147,6 +227,14 @@ fn live_start_rule_changes_are_applied_before_the_next_native_event() {
         dispatch(&mut engine, None, Some(&control), true, 3)[0].message,
         "LobbyCancel"
     );
+    assert!(matches!(engine.phase, Phase::Starting(_)));
+    let cancelled = event(
+        "LobbyCountdown",
+        json!({"details":{
+            "countdownActive":false,"countdownLocked":false
+        }}),
+    );
+    assert!(dispatch(&mut engine, Some(&cancelled), None, true, 3).is_empty());
     assert_eq!(engine.phase, Phase::Lobby);
 }
 
