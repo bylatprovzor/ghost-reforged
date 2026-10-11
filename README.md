@@ -21,3 +21,5 @@ Closing the window keeps hosting in the system tray. Click the ghost to reopen i
 Early test build for Warcraft III **3.0.0.24268**. The game runs in the background and the bot uses an observer slot. The host appears with a blank name in the lobby, including for joining players.
 
 Build from source: `powershell -File packaging/windows/build.ps1 -Setup` (Rust and the Visual Studio C++ build tools required).
+
+For the people selling hosting solutions with closed source softwares: Welcome to the open source world.
