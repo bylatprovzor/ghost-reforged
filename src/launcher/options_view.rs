@@ -1,13 +1,16 @@
 use super::{
     app::{App, Field, Message},
+    art, effects,
+    motion::Menu,
     palette as p,
     profile::GameSpeed,
+    select::select,
     view::{field, muted},
 };
 use ghost_reforged::commands::ChatCommand;
 use iced::{
     Element, Fill,
-    widget::{column, container, pick_list, row, rule, scrollable, text, toggler},
+    widget::{column, container, row, rule, scrollable, text, toggler},
 };
 
 pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
@@ -28,7 +31,6 @@ pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
         commands = commands.push(column![toggle, muted(command.description())].spacing(6));
     }
     let mut settings: iced::widget::Column<'a, Message> = column![
-        text("Options").size(32),
         muted(format!("Profile · {}", profile.title)),
         rule::horizontal(1),
         text("Welcome message").size(20),
@@ -57,9 +59,14 @@ pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
                     .on_toggle(Message::Private),
                 column![
                     muted("Game speed"),
-                    pick_list(GameSpeed::ALL, Some(profile.speed), Message::Speed)
-                        .padding(10)
-                        .width(Fill)
+                    select(
+                        app,
+                        Menu::Speed,
+                        profile.speed.to_string(),
+                        GameSpeed::ALL
+                            .into_iter()
+                            .map(|speed| (speed.to_string(), Message::Speed(speed)))
+                    )
                 ]
                 .spacing(7),
             ]
@@ -103,9 +110,23 @@ pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
             p::MUTED
         }));
     }
-    scrollable(container(settings).padding(iced::Padding {
-        right: 16.0,
-        ..Default::default()
-    }))
-    .into()
+    effects::frame(
+        container(
+            column![
+                super::widgets::heading("Options", art::Icon::Gear),
+                container(
+                    scrollable(container(settings).padding(iced::Padding {
+                        right: 16.0,
+                        ..Default::default()
+                    }))
+                    .style(p::scrollbar)
+                )
+                .padding(24)
+                .height(Fill)
+            ]
+            .height(Fill),
+        )
+        .height(Fill)
+        .style(p::panel),
+    )
 }

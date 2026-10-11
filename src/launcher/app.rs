@@ -34,6 +34,14 @@ pub enum Field {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    Tray(super::tray::Event),
+    QuitRequested(iced::window::Id),
+    Window(WindowAction),
+    PollBackdrop,
+    WindowFocus(bool),
+    Animate(Instant),
+    Menu(super::motion::Menu),
+    DismissMenus,
     Page(Page),
     Edit(Field, String),
     Command(ghost_reforged::commands::ChatCommand, bool),
@@ -48,7 +56,8 @@ pub enum Message {
     Host,
     Stop,
     Start,
-    Slot(u8, bool),
+    Slot(ghost_reforged::hosting::SlotRequest),
+    Kick(ghost_reforged::hosting::KickRequest),
     PollHost,
     CloseRequested(iced::window::Id),
     Browse,
@@ -59,6 +68,14 @@ pub enum Message {
     PollProcess,
     ProcessObserved(process::Observation),
     ClearLog,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WindowAction {
+    Drag,
+    Minimize,
+    Maximize,
+    Close,
 }
 
 pub struct Form {
@@ -113,6 +130,12 @@ pub struct LogEntry {
 }
 
 pub struct App {
+    pub(super) audio: ghost_reforged::background::Silence,
+    pub hidden: bool,
+    pub tray_available: bool,
+    pub backdrop: super::backdrop::Backdrop,
+    pub focused: bool,
+    pub motion: super::motion::Motion,
     pub page: Page,
     pub form: Form,
     pub profiles: Profiles,
@@ -146,6 +169,12 @@ impl App {
             form.profile.map = Some(map);
         }
         let mut app = Self {
+            audio: ghost_reforged::background::Silence::default(),
+            hidden: false,
+            tray_available: false,
+            backdrop: super::backdrop::Backdrop::new(),
+            focused: true,
+            motion: super::motion::Motion::default(),
             page: Page::Hosting,
             form,
             profiles,
@@ -209,14 +238,26 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        if self.preview.expanded
+        if let Message::Tray(event) = message {
+            return self.tray_event(event);
+        }
+        if let Message::CloseRequested(id) = message {
+            return self.hide_to_tray(id);
+        }
+        if self.motion.modal_visible()
             && !matches!(
                 message,
                 Message::ClosePreview
+                    | Message::Window(_)
+                    | Message::WindowFocus(_)
+                    | Message::PollBackdrop
+                    | Message::Picked(_)
+                    | Message::Animate(_)
                     | Message::PollHost
                     | Message::PollProcess
                     | Message::ProcessObserved(_)
                     | Message::CloseRequested(_)
+                    | Message::QuitRequested(_)
             )
         {
             return Task::none();
@@ -239,9 +280,34 @@ impl App {
             return Task::none();
         }
         match message {
-            Message::OpenPreview => self.preview.expand(),
-            Message::ClosePreview => self.preview.expanded = false,
-            Message::CloseRequested(id) => {
+            Message::Window(action) => {
+                return iced::window::latest().and_then(move |id| match action {
+                    WindowAction::Drag => iced::window::drag(id),
+                    WindowAction::Minimize => iced::window::minimize(id, true),
+                    WindowAction::Maximize => iced::window::toggle_maximize(id),
+                    WindowAction::Close => Task::done(Message::CloseRequested(id)),
+                });
+            }
+            Message::PollBackdrop => self.backdrop.poll(),
+            Message::WindowFocus(focused) => self.focused = focused && !self.hidden,
+            Message::Animate(now) => {
+                if let Some(page) = self.motion.tick(now) {
+                    self.page = page;
+                }
+            }
+            Message::Menu(menu) => self.motion.toggle_menu(menu),
+            Message::DismissMenus => self.motion.close_menus(),
+            Message::OpenPreview => {
+                self.preview.expand();
+                if self.preview.expanded {
+                    self.motion.modal.target(1.0, Instant::now());
+                }
+            }
+            Message::ClosePreview => {
+                self.preview.expanded = false;
+                self.motion.modal.target(0.0, Instant::now());
+            }
+            Message::QuitRequested(id) => {
                 if let Some(worker) = &self.worker {
                     self.closing = Some(id);
                     worker.send(Control::Stop);
@@ -250,7 +316,7 @@ impl App {
                     return iced::window::close(id);
                 }
             }
-            Message::Host if self.worker.is_none() && !self.picking => {
+            Message::Host if self.worker.is_none() && !self.picking && self.closing.is_none() => {
                 let result = self.start_hosting();
                 self.notify(result, "");
             }
@@ -265,21 +331,29 @@ impl App {
                     worker.send(Control::Start);
                 }
             }
-            Message::Slot(slot, open) => {
+            Message::Slot(request) => {
+                self.motion.close_menus();
                 if let Some(worker) = &self.worker {
-                    worker.send(Control::Slot { slot, open });
+                    worker.send(Control::EditSlot(request));
+                }
+            }
+            Message::Kick(target) => {
+                if let Some(worker) = &self.worker {
+                    worker.send(Control::Kick(target));
                 }
             }
             Message::PollHost => {
                 self.poll_host();
-                self.preview.poll();
+                if !self.hidden {
+                    self.preview.poll();
+                }
                 if self.worker.is_none()
                     && let Some(id) = self.closing.take()
                 {
                     return iced::window::close(id);
                 }
             }
-            Message::Page(page) => self.page = page,
+            Message::Page(page) => self.motion.navigate(self.page, page),
             Message::Edit(field, value) => {
                 match field {
                     Field::Title => self.form.profile.title = value,
@@ -309,8 +383,12 @@ impl App {
                 self.apply_settings();
             }
             Message::Private(value) => self.form.profile.private_game = value,
-            Message::Speed(value) => self.form.profile.speed = value,
+            Message::Speed(value) => {
+                self.form.profile.speed = value;
+                self.motion.close_menus();
+            }
             Message::RequireFull(value) => {
+                self.motion.close_menus();
                 self.form.profile.require_full = value;
                 self.apply_settings();
             }
@@ -356,6 +434,7 @@ impl App {
                 self.notify(result, "Saved.");
             }
             Message::SelectProfile(index) if index < self.profiles.items.len() => {
+                self.motion.close_menus();
                 let result = self.save().and_then(|_| {
                     let mut updated = self.profiles.clone();
                     updated.selected = index;
@@ -394,6 +473,13 @@ impl App {
                 return Task::perform(async { process::observe() }, Message::ProcessObserved);
             }
             Message::ProcessObserved(game) => {
+                if game.pid.is_some() || game.state == GameState::Stopped {
+                    self.audio.target(game.pid);
+                }
+                if let Some(error) = self.audio.error() {
+                    self.log(&error);
+                    self.notify(Err(error), "");
+                }
                 self.probing = false;
                 if self.worker.is_none() {
                     self.preview.target(game.pid);
@@ -411,8 +497,34 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
+            super::tray::subscription().map(Message::Tray),
+            if let Some(interval) = self
+                .backdrop
+                .interval(self.focused && !self.hidden && !self.motion.modal_visible())
+            {
+                iced::time::every(interval).map(|_| Message::PollBackdrop)
+            } else {
+                Subscription::none()
+            },
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Window(iced::window::Event::Focused) => {
+                    Some(Message::WindowFocus(true))
+                }
+                iced::Event::Window(iced::window::Event::Unfocused) => {
+                    Some(Message::WindowFocus(false))
+                }
+                _ => None,
+            }),
+            if !self.hidden && self.motion.active() {
+                iced::time::every(Duration::from_millis(16)).map(Message::Animate)
+            } else {
+                Subscription::none()
+            },
             iced::time::every(Duration::from_secs(3)).map(|_| Message::PollProcess),
-            if self.worker.is_some() || self.preview.needs_poll() || self.settings_due.is_some() {
+            if self.worker.is_some()
+                || (!self.hidden && self.preview.needs_poll())
+                || self.settings_due.is_some()
+            {
                 iced::time::every(Duration::from_millis(250)).map(|_| Message::PollHost)
             } else {
                 Subscription::none()

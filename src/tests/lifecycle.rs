@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn incomplete_creation_retry_keeps_its_number_and_game_budget() {
+    let mut engine = armed();
+    engine.config.max_games = 1;
+    let number = engine.number();
+    engine.retry_incomplete_lobby();
+    assert_eq!(engine.number(), number);
+    assert_eq!(engine.phase, Phase::AwaitMenu);
+    assert!(engine.owned_lobby(1).is_none());
+    let commands = engine.on_event(
+        &event(
+            "GameList",
+            json!({"games":[{
+                "id":42,"region":"EU","currentPlayers":1,"maxPlayers":4
+            }]}),
+        ),
+        2,
+    );
+    assert_eq!(commands[0].message, "CreateLobby");
+    assert_eq!(commands[0].payload["gameName"], engine.config.name(number));
+    assert_eq!(engine.config.max_games, 1);
+}
+
+#[test]
 fn an_existing_online_listing_does_not_wait_for_reinitialization() {
     let online = event(
         "GameList",

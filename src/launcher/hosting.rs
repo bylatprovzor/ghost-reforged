@@ -71,15 +71,7 @@ impl App {
                 Event::VisualChanged => self.preview.request(),
                 Event::Activity(event) => {
                     self.preview.request();
-                    match event {
-                        Activity::LobbyCreated(name) => {
-                            self.log_line(&format!("Lobby created · {name}"), true)
-                        }
-                        Activity::Joined(name) => self.log(&format!("{name} joined")),
-                        Activity::Left(name) => self.log(&format!("{name} left")),
-                        Activity::Command(line) => self.log(&line),
-                        Activity::GameStarted(name) => self.log(&format!("Game started · {name}")),
-                    }
+                    self.record_activity(event);
                 }
                 Event::Status(text) => {
                     self.preview.request();
@@ -125,6 +117,16 @@ impl App {
         self.notice_error = false;
         if self.worker.is_some() {
             self.settings_due = Some(Instant::now() + Duration::from_millis(500));
+        }
+    }
+
+    pub(super) fn record_activity(&mut self, event: Activity) {
+        match event {
+            Activity::LobbyCreated(name) => self.log_line(&format!("Lobby created · {name}"), true),
+            Activity::GameStarted(name) => self.log_line(&format!("Game started · {name}"), true),
+            Activity::Joined(name) => self.log(&format!("{name} joined")),
+            Activity::Left(name) => self.log(&format!("{name} left")),
+            Activity::Command(line) => self.log(&line),
         }
     }
 

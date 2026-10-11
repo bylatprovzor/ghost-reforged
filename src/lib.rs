@@ -14,3 +14,10 @@ pub mod alias;
 pub mod background;
 #[cfg(test)]
 mod tests;
+
+#[cfg(windows)]
+mod background_audio;
+#[cfg(windows)]
+mod background_launcher;
+#[cfg(windows)]
+mod background_window;

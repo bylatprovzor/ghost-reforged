@@ -118,12 +118,15 @@ pub struct KickTarget {
     lobby: String,
     player: PlayerKey,
     slot: u8,
+    electorate: BTreeSet<PlayerKey>,
 }
 
 impl KickTarget {
     pub fn confirm(&self, lobby: &Lobby) -> Option<Command> {
         (lobby.is_host
             && lobby.lobby_name == self.lobby
+            && electorate(lobby) == self.electorate
+            && self.electorate.len() == lobby.humans(false)
             && lobby.players.iter().any(|p| {
                 p.slot == self.slot
                     && p.id.filter(|id| *id >= 0) == self.player.id
@@ -173,22 +176,7 @@ impl LobbyCommands {
                 ..Self::default()
             };
         }
-        let roster: BTreeSet<_> = lobby
-            .players
-            .iter()
-            .filter(|p| {
-                p.slot_status == 2
-                    && p.slot_type == 0
-                    && !p.is_self
-                    && !p.is_observer
-                    && p.team != OBSERVER_TEAM
-                    && !p.name.trim().is_empty()
-            })
-            .map(|p| PlayerKey {
-                id: p.id.filter(|id| *id >= 0),
-                name: p.name.clone(),
-            })
-            .collect();
+        let roster = electorate(lobby);
         self.complete_roster = roster.len() == lobby.humans(false);
         self.slots = lobby
             .players
@@ -360,6 +348,7 @@ impl LobbyCommands {
                     lobby: self.lobby.clone(),
                     player: target,
                     slot,
+                    electorate: self.roster.clone(),
                 }),
             )
         } else {
@@ -384,6 +373,25 @@ impl LobbyCommands {
             required
         )
     }
+}
+
+fn electorate(lobby: &Lobby) -> BTreeSet<PlayerKey> {
+    lobby
+        .players
+        .iter()
+        .filter(|p| {
+            p.slot_status == 2
+                && p.slot_type == 0
+                && !p.is_self
+                && !p.is_observer
+                && p.team != OBSERVER_TEAM
+                && !p.name.trim().is_empty()
+        })
+        .map(|p| PlayerKey {
+            id: p.id.filter(|id| *id >= 0),
+            name: p.name.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

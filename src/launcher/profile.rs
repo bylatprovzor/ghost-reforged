@@ -66,18 +66,6 @@ impl std::fmt::Display for GameSpeed {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProfileChoice {
-    pub index: usize,
-    pub title: String,
-}
-
-impl std::fmt::Display for ProfileChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.title)
-    }
-}
-
 fn private_by_default() -> bool {
     true
 }

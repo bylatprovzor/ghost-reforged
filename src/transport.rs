@@ -18,6 +18,9 @@ pub enum TransportError {
 }
 
 pub struct Client(WebSocket<TcpStream>);
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod tests;
 impl Client {
     pub fn connect(endpoint: &Endpoint) -> Result<Self, TransportError> {
         for &port in &endpoint.ports {
@@ -58,10 +61,12 @@ impl Client {
             Ok(Message::Text(text)) => Ok(Some(serde_json::from_str(&text)?)),
             Ok(Message::Ping(_)) => {
                 self.0.flush().map_err(|_| TransportError::Disconnected)?;
-                Ok(None)
+                // A keepalive is not an idle input queue. Callers draining old
+                // callbacks must keep reading before requesting a fresh roster.
+                Ok(Some(Value::Null))
             }
             Ok(Message::Close(_)) => Err(TransportError::Disconnected),
-            Ok(_) => Ok(None),
+            Ok(_) => Ok(Some(Value::Null)),
             Err(tungstenite::Error::Io(e))
                 if matches!(
                     e.kind(),

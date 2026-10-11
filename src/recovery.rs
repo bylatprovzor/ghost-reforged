@@ -4,6 +4,20 @@ use crate::{
     protocol::{self, Lobby},
 };
 
+/// Native placeholder left by an incomplete map/lobby setup, not a one-player map.
+pub fn incomplete_lobby(lobby: &Lobby) -> bool {
+    let [slot] = lobby.players.as_slice() else {
+        return false;
+    };
+    lobby.is_host
+        && slot.slot == 0
+        && slot.slot_status == 0
+        && slot.slot_type == 0
+        && slot.team == u8::MAX
+        && !slot.is_self
+        && !slot.is_observer
+}
+
 pub fn resumable_lobby(config: &Config, lobby: &Lobby) -> Option<(u32, usize)> {
     let number = config.first_number.checked_sub(1).filter(|n| *n > 0)?;
     let map_index = config.maps.iter().position(|map| {

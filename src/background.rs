@@ -7,32 +7,20 @@ mod native {
         ptr::null,
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM},
+        Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
         System::Threading::{
             CreateMutexW, CreateProcessW, OpenProcess, PROCESS_INFORMATION,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
             QueryFullProcessImageNameW, ReleaseMutex, STARTF_USESHOWWINDOW, STARTUPINFOW,
             TerminateProcess, WaitForSingleObject,
         },
-        UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled},
-        UI::WindowsAndMessaging::{
-            EnumWindows, GWL_EXSTYLE, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId,
-            IsWindowVisible, SW_HIDE, SW_SHOWNA, SetWindowLongPtrW, ShowWindowAsync,
-            WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        },
+        UI::WindowsAndMessaging::SW_HIDE,
     };
-
-    const SHELL_STYLES: isize = (WS_EX_APPWINDOW | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as isize;
-
-    struct HiddenWindow {
-        handle: HWND,
-        shell_style: isize,
-        enabled: bool,
-    }
 
     pub struct Background {
         pid: u32,
-        hidden: Vec<HiddenWindow>,
+        guard: Option<crate::background_window::Guard>,
+        audio: Option<crate::background_audio::Guard>,
         process: HANDLE,
     }
 
@@ -65,12 +53,15 @@ mod native {
         }
     }
 
-    pub fn launch() -> Result<Option<Background>, String> {
+    pub(crate) fn launch(
+        quiet: &mut crate::background_launcher::Launch,
+    ) -> Result<Option<Background>, String> {
         let root = std::env::var_os("ProgramFiles(x86)")
             .ok_or("Warcraft III installation was not found.")?;
         let root = PathBuf::from(root);
         let launcher = root.join("Battle.net/Battle.net.exe");
         if launcher.is_file() {
+            quiet.prepare(&launcher)?;
             spawn(&launcher, "--exec=\"launch W3\"")?;
             return Ok(None);
         }
@@ -144,14 +135,16 @@ mod native {
             }
             Ok(Self {
                 pid,
-                hidden: Vec::new(),
+                guard: None,
+                audio: None,
                 process,
             })
         }
         pub fn terminate(&mut self) -> Result<(), String> {
             // The retained handle identifies this client even if Windows reuses its PID.
             if unsafe { WaitForSingleObject(self.process, 0) } == 0 {
-                self.hidden.clear();
+                self.audio = None;
+                self.guard = None;
                 return Ok(());
             }
             let mut path = [0u16; 32768];
@@ -174,78 +167,27 @@ mod native {
             {
                 return Err("Warcraft III did not close; restart was stopped.".into());
             }
-            self.hidden.clear();
+            self.guard = None;
+            self.audio = None;
             Ok(())
         }
         pub fn pid(&self) -> u32 {
             self.pid
         }
         pub fn reveal(&mut self) {
-            let _lock = crate::window_capture::window_access();
-            for saved in &self.hidden {
-                let window = saved.handle;
-                let mut pid = 0;
-                unsafe {
-                    GetWindowThreadProcessId(window, &mut pid);
-                    if pid == self.pid {
-                        let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-                        SetWindowLongPtrW(
-                            window,
-                            GWL_EXSTYLE,
-                            (style & !SHELL_STYLES) | saved.shell_style,
-                        );
-                        EnableWindow(window, i32::from(saved.enabled));
-                        ShowWindowAsync(window, SW_SHOWNA);
-                    }
-                }
-            }
-            self.hidden.clear();
+            self.audio = None;
+            self.guard = None;
         }
-        pub fn hide(&mut self) {
-            // Capture temporarily owns window presentation. Never stall native
-            // event processing behind PrintWindow while the game starts loading.
-            let Some(_lock) = crate::window_capture::try_window_access() else {
-                return;
-            };
-            unsafe extern "system" fn window(window: HWND, param: LPARAM) -> i32 {
-                let this = unsafe { &mut *(param as *mut Background) };
-                let mut pid = 0;
-                unsafe {
-                    GetWindowThreadProcessId(window, &mut pid);
-                }
-                let mut title = [0u16; 128];
-                let length =
-                    unsafe { GetWindowTextW(window, title.as_mut_ptr(), 128) }.max(0) as usize;
-                let primary =
-                    String::from_utf16_lossy(&title[..length]).starts_with("Warcraft III");
-                if pid == this.pid && (primary || unsafe { IsWindowVisible(window) } != 0) {
-                    unsafe {
-                        let style = GetWindowLongPtrW(window, GWL_EXSTYLE);
-                        if !this.hidden.iter().any(|saved| saved.handle == window) {
-                            this.hidden.push(HiddenWindow {
-                                handle: window,
-                                shell_style: style & SHELL_STYLES,
-                                enabled: IsWindowEnabled(window) != 0,
-                            });
-                        }
-                        if IsWindowVisible(window) != 0 {
-                            ShowWindowAsync(window, SW_HIDE);
-                        }
-                        let hidden_style = (style & !(WS_EX_APPWINDOW as isize))
-                            | (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as isize;
-                        if style != hidden_style {
-                            SetWindowLongPtrW(window, GWL_EXSTYLE, hidden_style);
-                        }
-                        if IsWindowEnabled(window) != 0 {
-                            EnableWindow(window, 0);
-                        }
-                    }
-                }
-                1
+        pub fn hide(&mut self) -> Result<(), String> {
+            if self.audio.is_none() {
+                self.audio = Some(crate::background_audio::Guard::start(self.pid)?);
             }
-            unsafe {
-                EnumWindows(Some(window), self as *mut Self as LPARAM);
+            if let Some(guard) = &self.guard {
+                guard.check()?;
+            } else {
+                self.guard = Some(crate::background_window::Guard::start(self.pid)?);
             }
+            Ok(())
         }
     }
 
@@ -263,10 +205,12 @@ mod native {
         use super::*;
         #[test]
         fn capture_cannot_block_the_hosting_loop() {
+            let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
             let mut background = Background::attach(std::process::id()).unwrap();
+            background.hide().unwrap();
             let held = crate::window_capture::window_access();
             let started = std::time::Instant::now();
-            background.hide();
+            background.hide().unwrap();
             assert!(started.elapsed() < std::time::Duration::from_millis(100));
             drop(held);
         }
@@ -278,61 +222,24 @@ mod native {
             drop(first);
             assert!(HostLease::named(&name).is_ok());
         }
-
-        #[test]
-        fn an_already_hidden_game_window_is_tracked_and_revealed_on_stop() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
-            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
-            let title: Vec<u16> = "Warcraft III window test\0".encode_utf16().collect();
-            let window = unsafe {
-                CreateWindowExW(
-                    0,
-                    class.as_ptr(),
-                    title.as_ptr(),
-                    0,
-                    0,
-                    0,
-                    8,
-                    8,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    null(),
-                )
-            };
-            assert!(!window.is_null());
-            let mut background = Background::attach(std::process::id()).unwrap();
-            background.hide();
-            let tracked = background.hidden.iter().any(|saved| saved.handle == window);
-            let protected = unsafe {
-                IsWindowEnabled(window) == 0
-                    && GetWindowLongPtrW(window, GWL_EXSTYLE) & SHELL_STYLES
-                        == (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as isize
-            };
-            background.reveal();
-            unsafe {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW,
-                };
-                let mut message: MSG = zeroed();
-                while PeekMessageW(&mut message, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                    DispatchMessageW(&message);
-                }
-            }
-            let visible = unsafe { IsWindowVisible(window) } != 0;
-            unsafe {
-                DestroyWindow(window);
-            }
-            assert!(tracked);
-            assert!(protected);
-            assert!(visible);
-            assert!(background.hidden.is_empty());
-        }
     }
 }
 
 #[cfg(windows)]
+pub use crate::background_audio::Silence;
+#[cfg(windows)]
 pub use native::*;
+
+#[cfg(not(windows))]
+#[derive(Default)]
+pub struct Silence;
+#[cfg(not(windows))]
+impl Silence {
+    pub fn target(&mut self, _: Option<u32>) {}
+    pub fn error(&self) -> Option<String> {
+        None
+    }
+}
 
 #[cfg(not(windows))]
 pub struct Background;
@@ -352,13 +259,28 @@ impl Background {
     pub fn pid(&self) -> u32 {
         0
     }
-    pub fn hide(&mut self) {}
+    pub fn hide(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     pub fn reveal(&mut self) {}
     pub fn terminate(&mut self) -> Result<(), String> {
         Err("Restarting Warcraft III requires Windows.".into())
     }
 }
 #[cfg(not(windows))]
-pub fn launch() -> Result<Option<Background>, String> {
+pub(crate) fn launch(_: &mut LauncherLaunch) -> Result<Option<Background>, String> {
     Err("Background hosting requires Windows.".into())
+}
+
+#[cfg(windows)]
+pub(crate) use crate::background_launcher::Launch as LauncherLaunch;
+#[cfg(not(windows))]
+#[derive(Default)]
+pub(crate) struct LauncherLaunch;
+#[cfg(not(windows))]
+impl LauncherLaunch {
+    pub(crate) fn poll(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    pub(crate) fn complete(&mut self) {}
 }

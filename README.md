@@ -4,12 +4,20 @@
 
 A Warcraft III auto-host for Windows, written in Rust.
 
-1. Download the Windows ZIP from [Releases](https://github.com/shideneyu/ghost-reforged/releases) and extract it.
-2. Run **Install.cmd**, then open **GHost Reforged** from the Start menu. Or run **ghost-reforged.exe** directly.
-3. Sign in to Battle.net, select a map and click **Host**.
+Download [ghost-reforged.exe](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.0/ghost-reforged.exe) and run it. No installation required.
+
+For a Start menu shortcut, run the [installer](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.0/GHost-Reforged-Setup-x64.exe), or paste this into PowerShell:
+
+```powershell
+irm https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.0/install.ps1 | iex
+```
+
+Sign in to Battle.net, select a map and click **Host**. Windows 10/11, 64-bit. No administrator rights required.
 
 Auto start defaults to **Full**. Choose a minimum player count or use **Force start**. Players can use **?votestart** and **?votekick name**. Edit commands and the welcome message in **Options**, including while hosting. **Stop Hosting** closes the current lobby and stops new ones. Save presets in **Profiles**.
 
+Closing the window keeps hosting in the system tray. Click the ghost to reopen it, or right-click and choose **Quit** to exit.
+
 Early test build for Warcraft III **3.0.0.24268**. The game runs in the background and the bot uses an observer slot. Host-name masking on other clients is still being tested.
 
-Build from source: `powershell -File packaging/windows/build.ps1` (Rust and the Visual Studio C++ build tools required).
+Build from source: `powershell -File packaging/windows/build.ps1 -Setup` (Rust and the Visual Studio C++ build tools required).

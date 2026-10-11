@@ -176,6 +176,45 @@ fn kick_rejects_self_observers_ai_small_rosters_and_ambiguous_names() {
 }
 
 #[test]
+fn a_pending_kick_is_cancelled_if_a_voter_leaves_or_changes_identity() {
+    let mut commands = LobbyCommands::default();
+    let settings = CommandSettings::default();
+    commands.observe(Some(&lobby()), 0);
+    commands.handle(&chat("Player1", "?votekick Player3"), &settings, 1);
+    let target = commands
+        .handle(&chat("Player2", "?votekick Player3"), &settings, 2)
+        .kick
+        .unwrap();
+    for change in 0..4 {
+        let mut roster = lobby();
+        match change {
+            0 => roster.players[1].slot_status = 0,
+            1 => roster.players[1].is_observer = true,
+            2 => roster.players[1].id = Some(80),
+            _ => {
+                roster.players[4].is_observer = false;
+                roster.players[4].team = 0;
+            }
+        }
+        assert!(target.confirm(&roster).is_none());
+    }
+    let mut roster = lobby();
+    roster.players[4].is_observer = false;
+    roster.players[4].team = 0;
+    roster.players[4].name.clear();
+    assert!(
+        target.confirm(&roster).is_none(),
+        "An unnamed join invalidates the pending vote"
+    );
+    let mut roster = lobby();
+    roster.players[0].name = "Ghost".into();
+    assert!(
+        target.confirm(&roster).is_some(),
+        "A host alias refresh does not change the electorate"
+    );
+}
+
+#[test]
 fn live_disabling_clears_votes_and_old_ready_settings_migrate() {
     let mut settings: CommandSettings =
         serde_json::from_str(r#"["ready","unready","help","vote_start"]"#).unwrap();

@@ -6,6 +6,18 @@ use super::{
 use std::fs;
 
 #[test]
+fn started_games_are_named_highlighted_activity_entries() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(directory.path(), None);
+    app.record_activity(ghost_reforged::hosting::Activity::GameStarted(
+        "Test #7".into(),
+    ));
+    let entry = app.logs.front().unwrap();
+    assert_eq!(entry.message, "Game started · Test #7");
+    assert!(entry.highlight);
+}
+
+#[test]
 fn reservation_is_durable_before_creation_and_cannot_be_reused() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path(), None);
@@ -208,6 +220,49 @@ fn preview_modal_requires_an_image_and_blocks_covered_controls_until_closed() {
     assert_eq!(app.form.profile.bot_name, "Ghost");
     let _ = app.update(Message::ClosePreview);
     assert!(!app.preview.expanded);
+    let _ = app.update(Message::Animate(
+        std::time::Instant::now() + std::time::Duration::from_secs(1),
+    ));
     let _ = app.update(Message::Edit(Field::Bot, "Changed".into()));
     assert_eq!(app.form.profile.bot_name, "Changed");
+}
+
+#[test]
+fn dropdown_selection_closes_the_menu_without_moving_the_hosting_page() {
+    use super::{app::Page, motion::Menu};
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(directory.path(), None);
+    let _ = app.update(Message::Menu(Menu::StartRule));
+    assert!(app.motion.menus[Menu::StartRule.index()].is_open());
+    let _ = app.update(Message::RequireFull(false));
+    assert!(!app.motion.menus[Menu::StartRule.index()].is_open());
+    assert!(!app.form.profile.require_full);
+    assert_eq!(app.page, Page::Hosting);
+}
+
+#[test]
+fn an_inactive_window_suspends_video_requests_without_touching_lobby_settings() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(directory.path(), None);
+    let before = app.form.read().unwrap();
+    let _ = app.update(Message::WindowFocus(false));
+    assert!(app.backdrop.interval(app.focused).is_none());
+    assert_eq!(app.form.read().unwrap(), before);
+    let _ = app.update(Message::WindowFocus(true));
+    assert!(app.backdrop.interval(app.focused).is_some());
+}
+
+#[test]
+fn picker_completions_are_processed_even_when_the_preview_is_open() {
+    for selected in [None, Some(std::path::PathBuf::from("CastleFight.w3x"))] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = App::new(directory.path(), None);
+        app.picking = true;
+        app.preview.image = Some(iced::widget::image::Handle::from_rgba(1, 1, vec![255; 4]));
+        let _ = app.update(Message::OpenPreview);
+        assert!(app.preview.expanded);
+        let _ = app.update(Message::Picked(selected.clone()));
+        assert!(!app.picking);
+        assert_eq!(app.form.profile.map, selected);
+    }
 }

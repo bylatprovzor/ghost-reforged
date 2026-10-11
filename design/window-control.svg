@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="steel" x2="0" y2="1">
+      <stop stop-color="#a5bac4"/><stop offset=".16" stop-color="#26313c"/>
+      <stop offset=".45" stop-color="#121a25"/><stop offset=".75" stop-color="#536775"/>
+      <stop offset="1" stop-color="#111824"/>
+    </linearGradient>
+    <linearGradient id="inset" x2="0" y2="1">
+      <stop stop-color="#09172b"/><stop offset="1" stop-color="#02070e"/>
+    </linearGradient>
+    <linearGradient id="gold" x2="0" y2="1">
+      <stop stop-color="#fff0a5"/><stop offset=".45" stop-color="#ffc927"/>
+      <stop offset="1" stop-color="#bc710c"/>
+    </linearGradient>
+  </defs>
+  <path d="M13 5 18 8H46L51 5 53 12 59 17 56 22V45L59 50 51 53 47 58 42 55H20L14 58 11 52 5 48 8 42V22L5 16 12 12Z" fill="#030810" stroke="#102335" stroke-width="2"/>
+  <path d="M16 10H47L54 17V46L47 53H16L9 46V17Z" fill="url(#steel)" stroke="#75848a"/>
+  <path d="M18 15H45L49 19V43L44 48H19L14 43V20Z" fill="#02070c" stroke="#070d14" stroke-width="3"/>
+  <path d="M20 18H44L47 21V42L43 46H20L17 42V21Z" fill="url(#inset)" stroke="#456a83"/>
+  <path d="M20 18H43L46 21M17 23V40" fill="none" stroke="#80b9d9" stroke-width=".8"/>
+  <path d="M12 16 17 11M47 11 52 16M12 46 17 51M47 51 52 46" stroke="#c3c9c3" stroke-width="1.4"/>
+  <path d="M19 12H43M11 23V40M52 23V40M20 51H42" stroke="#0c1521"/>
+  <path d="M15 53 18 60 20 53M29 54 31 63 33 54M44 53 46 60 48 53" fill="#34668a"/>
+  <path d="M17 54 18 59M31 55V61M46 54V58" stroke="#8ac6ed" stroke-width=".7"/>
+  <path d="M13 6 15 11 20 11M49 6 47 11 43 11" fill="none" stroke="#a1bec9"/>
+  <!-- glyph -->
+</svg>

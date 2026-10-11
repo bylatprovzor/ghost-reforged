@@ -1,7 +1,4 @@
-use crate::{
-    engine::{Engine, Phase},
-    protocol::Lobby,
-};
+use crate::{engine::Engine, protocol::Lobby};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Activity {
@@ -50,10 +47,8 @@ impl ActivityTracker {
             }
             events.extend(self.roster(lobby));
         }
-        if matches!(
-            engine.phase,
-            Phase::InGame | Phase::Restarting | Phase::Releasing(_)
-        ) && !self.started
+        if engine.game_started()
+            && !self.started
             && let Some(name) = &self.lobby
         {
             self.started = true;

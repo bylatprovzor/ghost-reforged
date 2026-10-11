@@ -2,6 +2,11 @@ mod activity;
 mod control;
 use control::{Reservation, dispatch, reserve};
 mod connection;
+mod kick;
+mod repair;
+pub use kick::KickRequest;
+mod slots;
+pub use slots::{SlotAction, SlotRequest};
 mod settings;
 mod shutdown;
 use crate::{
@@ -37,17 +42,22 @@ pub enum Control {
     Settings(LiveSettings),
     HostName(String),
     Slot { slot: u8, open: bool },
+    Kick(KickRequest),
+    EditSlot(SlotRequest),
     Reserved { number: u32, saved: bool },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slot {
+    pub id: Option<i64>,
     pub name: String,
     pub number: u8,
     pub status: u8,
     pub computer: bool,
     pub observer: bool,
     pub own: bool,
+    pub change_type: bool,
+    pub change_team: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -136,13 +146,14 @@ fn run(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     let _lease = background::HostLease::acquire()?;
+    let mut repair = repair::Repair::default();
     let Some(connection::Connection {
         initialization_required,
         mut client,
         mut alias,
         mut game,
         mut pending,
-    }) = connection::open(&config, name.clone(), tx, stop)?
+    }) = connection::open(&config, name.clone(), tx, stop, &mut repair)?
     else {
         return Ok(());
     };
@@ -164,7 +175,9 @@ fn run(
     let mut chat = crate::commands::LobbyCommands::default();
     let mut announcements = crate::welcome::Announcements::default();
     let mut start_requested = None;
-    let mut kick_requested: Option<(crate::commands::KickTarget, u64)> = None;
+    let mut kick_requested: Option<(crate::commands::KickTarget, u64, kick::RefreshGate)> = None;
+    let mut manual_kick = kick::PendingKick::default();
+    let mut slot_edit = slots::PendingSlot::default();
     loop {
         let now = started.elapsed().as_secs();
         let control = deferred_controls.pop_front().or_else(|| rx.try_recv().ok());
@@ -204,22 +217,69 @@ fn run(
         {
             alias_ok = false;
         }
-        let mut commands = dispatch(&mut engine, event.as_ref(), control.as_ref(), alias_ok, now);
-        if kick_requested
-            .as_ref()
-            .is_some_and(|(_, requested)| now.saturating_sub(*requested) >= 5)
-            || !matches!(engine.phase, Phase::Lobby | Phase::Countdown(_))
-        {
-            kick_requested = None;
-        }
-        if alias_ok
-            && event
+        let repair_lobby =
+            if let Some(candidate) = repair.observe(&engine.phase, event.as_ref(), now) {
+                repair.confirm(&candidate, &mut client, &mut pending, tx, stop)?
+            } else {
+                false
+            };
+        let mut commands = if repair_lobby {
+            Vec::new()
+        } else {
+            dispatch(&mut engine, event.as_ref(), control.as_ref(), alias_ok, now)
+        };
+        if let Some((command, line)) = manual_kick.confirm(
+            &engine,
+            now,
+            event
                 .as_ref()
-                .is_some_and(|e| e["messageType"] == "GameLobbySetup")
-            && let Some((target, _)) = kick_requested.take()
-            && let Some(lobby) = engine.owned_lobby(now)
-        {
-            commands.extend(target.confirm(lobby));
+                .is_some_and(|e| e["messageType"] == "GameLobbySetup"),
+            alias_ok,
+            event.is_none(),
+        ) {
+            commands.extend(command);
+            if let Some(line) = line {
+                let _ = tx.send(Event::Activity(Activity::Command(line)));
+            }
+        }
+        if let Some(Control::Kick(target)) = &control {
+            manual_kick.request(target.clone(), &engine, now);
+        }
+        if let Some(Control::EditSlot(request)) = &control {
+            slot_edit.request(request.clone(), &engine, now);
+        }
+        let (slot_commands, line) = slot_edit.advance(
+            &engine,
+            now,
+            event
+                .as_ref()
+                .is_some_and(|e| e["messageType"] == "GameLobbySetup"),
+            event.is_none(),
+            alias_ok,
+        );
+        commands.extend(slot_commands);
+        if let Some(line) = line {
+            let _ = tx.send(Event::Activity(Activity::Command(line)));
+        }
+        kick::invalidate_vote(&mut kick_requested, &engine, now);
+        if let Some((_, _, gate)) = &mut kick_requested {
+            match gate.advance(
+                event
+                    .as_ref()
+                    .is_some_and(|e| e["messageType"] == "GameLobbySetup"),
+                event.is_none(),
+                alias_ok,
+            ) {
+                kick::Refresh::Request => commands.push(Command::empty("SendGameLobbySetup")),
+                kick::Refresh::Confirm => {
+                    if let Some((target, _, _)) = kick_requested.take()
+                        && let Some(lobby) = engine.owned_lobby(now)
+                    {
+                        commands.extend(target.confirm(lobby));
+                    }
+                }
+                kick::Refresh::Wait => {}
+            }
         }
         if let Some(requested) = start_requested {
             if now.saturating_sub(requested) >= 5 || matches!(engine.phase, Phase::Starting(_)) {
@@ -238,8 +298,7 @@ fn run(
                 }
                 commands.extend(outcome.reply);
                 if let Some(target) = outcome.kick {
-                    kick_requested = Some((target, now));
-                    commands.push(Command::empty("SendGameLobbySetup"));
+                    kick_requested = Some((target, now, kick::RefreshGate::default()));
                 }
                 if outcome.start {
                     commands.extend(engine.start_now(now));
@@ -271,11 +330,25 @@ fn run(
             }
         }
         publish_lobby(&engine, alias_ok, now, &mut snapshot, tx);
-        if engine.phase == Phase::Restarting {
-            status(tx, "Restarting Warcraft III…");
+        if repair_lobby || engine.phase == Phase::Restarting {
+            if stop.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            status(
+                tx,
+                if repair_lobby {
+                    "Incomplete lobby detected. Restarting Warcraft III…"
+                } else {
+                    "Restarting Warcraft III…"
+                },
+            );
             let _ = tx.send(Event::ClientChanged(None));
             game.terminate()?;
-            engine.client_stopped(now);
+            if repair_lobby {
+                engine.retry_incomplete_lobby();
+            } else {
+                engine.client_stopped(now);
+            }
             snapshot = None;
             alias_ok = false;
             let _ = tx.send(Event::LobbyCleared);
@@ -286,7 +359,8 @@ fn run(
                     Err(reason.clone())
                 };
             }
-            let Some(next) = connection::open(&engine.config, name.clone(), tx, stop)? else {
+            let Some(next) = connection::open(&engine.config, name.clone(), tx, stop, &mut repair)?
+            else {
                 return Ok(());
             };
             if next.initialization_required {
@@ -375,7 +449,7 @@ fn run(
                     continue;
                 }
                 alias_ok = true;
-                game.hide();
+                game.hide()?;
             }
         }
         publish_lobby(
@@ -395,7 +469,7 @@ fn run(
                 .map_err(|e| e.to_string())?;
         }
         if !matches!(engine.phase, Phase::AwaitSignIn | Phase::Stopped(_)) {
-            game.hide();
+            game.hide()?;
         }
         let phase = phase_label(&engine.phase, now);
         if phase != reported {
@@ -465,12 +539,15 @@ fn summarize(lobby: &Lobby, can_start: bool, can_edit_slots: bool) -> Snapshot {
             .players
             .iter()
             .map(|p| Slot {
+                id: p.id,
                 name: p.name.clone(),
                 number: p.slot,
                 status: p.slot_status,
                 computer: p.slot_type != 0,
                 observer: p.is_observer || p.team == 24,
                 own: p.is_self,
+                change_type: p.slot_type_change_enabled,
+                change_team: p.team_change_enabled,
             })
             .collect(),
     }

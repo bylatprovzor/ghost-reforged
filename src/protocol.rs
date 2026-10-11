@@ -111,6 +111,8 @@ pub struct Player {
     pub is_self: bool,
     pub is_observer: bool,
     pub team_change_enabled: bool,
+    #[serde(default)]
+    pub slot_type_change_enabled: bool,
 }
 
 impl Lobby {

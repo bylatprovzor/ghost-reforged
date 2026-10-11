@@ -1,6 +1,11 @@
 use super::*;
 use crate::config::HostMode;
 
+#[path = "hosting_action_tests.rs"]
+mod action_tests;
+#[path = "hosting_slot_tests.rs"]
+mod slot_tests;
+
 fn event(kind: &str, payload: Value) -> Value {
     json!({"messageType":kind,"payload":payload})
 }
@@ -344,22 +349,28 @@ fn player_capacity_excludes_computers_observers_and_closed_slots() {
     assert_eq!(snapshot.player_capacity(), 1);
     for (status, computer, observer) in [(2, true, false), (1, false, false), (0, false, true)] {
         snapshot.slots.push(Slot {
+            id: None,
             name: String::new(),
             number: snapshot.slots.len() as u8,
             status,
             computer,
             observer,
             own: false,
+            change_type: true,
+            change_team: true,
         });
     }
     assert_eq!(snapshot.player_capacity(), 1);
     snapshot.slots.push(Slot {
+        id: None,
         name: String::new(),
         number: 5,
         status: 0,
         computer: false,
         observer: false,
         own: false,
+        change_type: true,
+        change_team: true,
     });
     assert_eq!(snapshot.player_capacity(), 2);
 }

@@ -37,6 +37,7 @@ pub struct Engine {
     provider_ready: bool,
     manual_population: Option<usize>,
     countdown_locked: bool,
+    start_confirmed: bool,
     menu_required: bool,
     initialization_required: bool,
     cancelled_roster: Option<String>,
@@ -59,6 +60,7 @@ impl Engine {
             provider_ready: false,
             manual_population: None,
             countdown_locked: false,
+            start_confirmed: false,
             menu_required: false,
             initialization_required: false,
             cancelled_roster: None,
@@ -278,6 +280,9 @@ impl Engine {
                 if payload["details"]["countdownActive"] == false
                     && matches!(self.phase, Phase::Starting(_))
                 {
+                    // Native countdown completion precedes the loading-screen
+                    // callback, which may be delayed or never reach the UI.
+                    self.start_confirmed |= self.countdown_locked;
                     if !self.countdown_locked {
                         self.cancelled_roster = self
                             .latest
@@ -296,6 +301,7 @@ impl Engine {
             }
             "SetGlueScreen" if self.owned => match payload["screen"].as_str() {
                 Some("LOADING_SCREEN") if matches!(self.phase, Phase::Starting(_)) => {
+                    self.start_confirmed = true;
                     if self.config.leave_on_load
                         && self.config.host_mode == HostMode::Observer
                         && self
@@ -356,6 +362,10 @@ impl Engine {
         self.number
     }
 
+    pub(crate) fn game_started(&self) -> bool {
+        self.owned && self.start_confirmed
+    }
+
     pub fn owned_lobby(&self, now: u64) -> Option<&Lobby> {
         let (lobby, seen) = self.latest.as_ref()?;
         (self.owned
@@ -383,6 +393,7 @@ impl Engine {
             self.cancelled_roster = None;
             self.manual_population = self.owned_lobby(now).map(Lobby::occupied_players);
             self.countdown_locked = false;
+            self.start_confirmed = false;
             self.phase = Phase::Starting(now);
             vec![Command::empty("LobbyStart")]
         } else {
@@ -421,6 +432,19 @@ impl Engine {
         }
     }
 
+    pub(crate) fn retry_incomplete_lobby(&mut self) {
+        // A failed creation does not consume a completed game or a second reservation.
+        let config = Config {
+            first_number: self.number,
+            ..self.config.clone()
+        };
+        let completed = self.completed;
+        let map_index = self.map_index;
+        *self = Self::new(config);
+        self.completed = completed;
+        self.map_index = map_index;
+    }
+
     pub fn expect_client_initialization(&mut self) {
         self.initialization_required = true;
         self.provider_ready = false;
@@ -430,6 +454,7 @@ impl Engine {
         self.provider_ready = false;
         self.manual_population = None;
         self.countdown_locked = false;
+        self.start_confirmed = false;
         self.cancelled_roster = None;
         let Some(next) = self.number.checked_add(1) else {
             self.stop("Lobby number exhausted");

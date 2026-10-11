@@ -109,7 +109,8 @@ impl RenderWindow {
             // A hidden DirectX window returns a black PrintWindow image. Let it
             // render briefly with zero opacity, no activation and no hit testing.
             // Existing layered windows have their own presentation contract.
-            if style & WS_EX_LAYERED as isize != 0 {
+            if style & WS_EX_LAYERED as isize != 0 && !crate::background_window::protected(*window)
+            {
                 return Err("The game window uses an unsupported presentation mode.".into());
             }
             render.applied_style =

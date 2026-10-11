@@ -31,9 +31,48 @@ pub(super) fn open(
     name: String,
     tx: &Sender<Event>,
     stop: &AtomicBool,
+    repair: &mut super::repair::Repair,
+) -> Result<Option<Connection>, String> {
+    loop {
+        let Some(mut connection) = open_once(config, name.clone(), tx, stop)? else {
+            return Ok(None);
+        };
+        let candidate = connection
+            .pending
+            .iter()
+            .rev()
+            .find(|event| event["messageType"] == "GameLobbySetup")
+            .and_then(|event| serde_json::from_value::<Lobby>(event["payload"].clone()).ok())
+            .filter(crate::recovery::incomplete_lobby);
+        if let Some(candidate) = candidate
+            && repair.confirm(
+                &candidate,
+                &mut connection.client,
+                &mut connection.pending,
+                tx,
+                stop,
+            )?
+        {
+            if stop.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            status(tx, "Incomplete lobby detected. Restarting Warcraft III…");
+            connection.game.terminate()?;
+            continue;
+        }
+        return Ok(Some(connection));
+    }
+}
+
+fn open_once(
+    config: &Config,
+    name: String,
+    tx: &Sender<Event>,
+    stop: &AtomicBool,
 ) -> Result<Option<Connection>, String> {
     status(tx, "Connecting to Warcraft III…");
     let mut background = None;
+    let mut launcher = background::LauncherLaunch::default();
     let discovery = discovery::discover();
     let initialization_required = needs_initialization(&discovery);
     let mut launch_requested = false;
@@ -42,18 +81,19 @@ pub(super) fn open(
         Err(DiscoveryError::NotRunning | DiscoveryError::NoEndpoint) => {
             if matches!(discovery, Err(DiscoveryError::NotRunning)) {
                 status(tx, "Starting Warcraft III through Battle.net…");
-                background = background::launch()?;
+                background = background::launch(&mut launcher)?;
                 launch_requested = true;
             }
             let deadline = Instant::now() + Duration::from_secs(60);
             loop {
+                launcher.poll()?;
                 if background.is_none()
                     && let Ok(pid) = discovery::process_id()
                 {
                     background = Some(background::Background::attach(pid)?);
                 }
                 if let Some(game) = background.as_mut() {
-                    game.hide();
+                    game.hide()?;
                 }
                 if stop.load(Ordering::SeqCst) {
                     return Ok(None);
@@ -63,7 +103,7 @@ pub(super) fn open(
                     // An endpoint-less client can exit between discovery attempts.
                     drop(background.take());
                     status(tx, "Starting Warcraft III through Battle.net…");
-                    background = background::launch()?;
+                    background = background::launch(&mut launcher)?;
                 }
                 match discovered {
                     Ok(endpoint)
@@ -94,7 +134,7 @@ pub(super) fn open(
         Some(game) => game,
         None => background::Background::attach(endpoint.pid)?,
     };
-    game.hide();
+    game.hide()?;
     let mut client = Client::connect(&endpoint).map_err(|e| e.to_string())?;
     let alias = Alias::open(endpoint.pid, name)?;
     client
@@ -128,7 +168,8 @@ pub(super) fn open(
             if event["messageType"] == "GameLobbySetup" {
                 let value: Lobby = serde_json::from_value(event["payload"].clone())
                     .map_err(|_| "The native lobby format changed.")?;
-                if (value.local().is_some() || value.is_host)
+                if !crate::recovery::incomplete_lobby(&value)
+                    && (value.local().is_some() || value.is_host)
                     && crate::recovery::resumable_lobby(config, &value).is_none()
                 {
                     return Err("This lobby belongs to another session. Leave it before hosting with this profile.".into());
@@ -138,6 +179,10 @@ pub(super) fn open(
         // A resumable roster must reach the engine before any listing can create another lobby.
         prioritize_adoption(&mut pending);
     }
+    if stop.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
+    launcher.complete();
     Ok(Some(Connection {
         initialization_required,
         client,
@@ -152,6 +197,13 @@ fn prioritize_adoption(pending: &mut VecDeque<Value>) {
         .iter()
         .position(|event| event["messageType"] == "GameLobbySetup")
     {
+        // Repair must see the chronological menu/placeholder sequence. Only a
+        // populated roster can authorize adoption ahead of an older listing.
+        if serde_json::from_value::<Lobby>(pending[index]["payload"].clone())
+            .is_ok_and(|lobby| crate::recovery::incomplete_lobby(&lobby))
+        {
+            return;
+        }
         let first = pending
             .remove(index)
             .expect("index came from the same queue");
@@ -181,6 +233,21 @@ fn request_launch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_keeps_menu_and_placeholder_in_chronological_order_for_repair() {
+        let mut pending = VecDeque::from([
+            json!({"messageType":"SetGlueScreen","payload":{"screen":"MAIN_MENU"}}),
+            json!({"messageType":"GameLobbySetup","payload":{
+                "isHost":true,"lobbyName":"Test #1","mapData":{"mapPath":"map.w3x"},
+                "players":[{"slot":0,"slotStatus":0,"slotType":0,"team":255,
+                    "isSelf":false,"isObserver":false,"teamChangeEnabled":false}]
+            }}),
+        ]);
+        let original = pending.clone();
+        prioritize_adoption(&mut pending);
+        assert_eq!(pending, original);
+    }
 
     #[test]
     fn a_client_that_exits_before_exposing_its_endpoint_gets_one_launch_request() {

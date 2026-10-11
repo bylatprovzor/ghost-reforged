@@ -1,19 +1,35 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
+mod art;
+#[cfg(all(test, windows))]
+mod audio_tests;
+mod backdrop;
+mod backdrop_view;
+mod chrome;
+mod desktop;
+mod effects;
+mod frame_art;
 mod hosting;
+mod hosting_view;
 mod map_name;
 mod maps;
+mod motion;
 mod options_view;
 mod palette;
 mod preview;
 mod preview_view;
 mod process;
 mod profile;
+mod select;
 mod storage;
 #[cfg(test)]
 mod tests;
+mod tray;
+#[cfg(test)]
+mod ui_tests;
 mod view;
+mod widgets;
 
 use clap::Parser;
 use iced::Task;
@@ -63,7 +79,8 @@ fn main() -> iced::Result {
             64,
         )
         .ok(),
-        size: iced::Size::new(1180.0, 830.0),
+        size: iced::Size::new(1180.0, 856.0),
+        decorations: false,
         min_size: Some(iced::Size::new(1000.0, 720.0)),
         position: iced::window::Position::Centered,
         exit_on_close_request: false,
