@@ -10,6 +10,7 @@ impl App {
         self.save()?;
         let p = self.form.read()?;
         let map = p.map.ok_or("Select a Warcraft III map first.")?;
+        let map = super::maps::validate(&map)?;
         let config = Config {
             maps: vec![map],
             host_mode: HostMode::Observer,

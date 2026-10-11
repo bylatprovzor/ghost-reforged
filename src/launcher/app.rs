@@ -60,7 +60,7 @@ pub enum Message {
     PollHost,
     CloseRequested(iced::window::Id),
     Browse,
-    Picked(Option<PathBuf>),
+    Picked(Result<Option<PathBuf>, String>),
     Save,
     SelectProfile(usize),
     NewProfile,
@@ -398,30 +398,20 @@ impl App {
             }
             Message::Browse if !self.picking => {
                 self.picking = true;
-                return Task::perform(
-                    async {
-                        let mut dialog = rfd::AsyncFileDialog::new();
-                        if let Some(directory) = super::maps::downloads_directory() {
-                            dialog = dialog.set_directory(directory);
-                        }
-                        dialog
-                            .set_title("Select a Warcraft III map")
-                            .add_filter("Warcraft III", &["w3x", "w3m"])
-                            .pick_file()
-                            .await
-                            .map(|file| file.path().to_path_buf())
-                    },
-                    Message::Picked,
-                );
+                return Task::perform(super::maps::pick(), Message::Picked);
             }
-            Message::Picked(path) => {
+            Message::Picked(result) => {
                 self.picking = false;
-                if let Some(path) = path {
-                    if self.form.profile.automatic_name {
-                        self.form.profile.lobby_pattern = super::map_name::pattern(&path);
+                match result {
+                    Ok(Some(path)) => {
+                        if self.form.profile.automatic_name {
+                            self.form.profile.lobby_pattern = super::map_name::pattern(&path);
+                        }
+                        self.form.profile.map = Some(path);
+                        self.notify(Ok(()), "Map selected.");
                     }
-                    self.form.profile.map = Some(path);
-                    self.notify(Ok(()), "Map selected.");
+                    Err(error) => self.notify(Err(error), ""),
+                    Ok(None) => {}
                 }
             }
             Message::Save => {

@@ -191,12 +191,12 @@ fn old_profiles_load_new_settings_without_changing_saved_values() {
 fn map_selection_generates_the_default_name_and_respects_a_custom_override() {
     let directory = tempfile::tempdir().unwrap();
     let mut app = App::new(directory.path(), None);
-    let _ = app.update(Message::Picked(Some(
+    let _ = app.update(Message::Picked(Ok(Some(
         "5473_SurvivalChaosReborn_v1.59_fix1.w3x".into(),
-    )));
+    ))));
     assert_eq!(app.form.profile.lobby_pattern, "Survival Chaos #{n}");
     let _ = app.update(Message::Edit(Field::Pattern, "Friends #{n}".into()));
-    let _ = app.update(Message::Picked(Some("CastleFight.w3x".into())));
+    let _ = app.update(Message::Picked(Ok(Some("CastleFight.w3x".into()))));
     assert_eq!(app.form.profile.lobby_pattern, "Friends #{n}");
     let _ = app.update(Message::MapName);
     assert_eq!(app.form.profile.lobby_pattern, "Castle Fight #{n}");
@@ -258,10 +258,34 @@ fn picker_completions_are_processed_even_when_the_preview_is_open() {
         app.preview.image = Some(iced::widget::image::Handle::from_rgba(1, 1, vec![255; 4]));
         let _ = app.update(Message::OpenPreview);
         assert!(app.preview.expanded);
-        let _ = app.update(Message::Picked(selected.clone()));
+        let _ = app.update(Message::Picked(Ok(selected.clone())));
         assert!(!app.picking);
         assert_eq!(app.form.profile.map, selected);
     }
+}
+
+#[test]
+fn rejected_map_selection_preserves_the_profile_and_allows_picking_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(directory.path(), Some("Current.w3x".into()));
+    let original = app.form.read().unwrap();
+    app.picking = true;
+    let _ = app.update(Message::Picked(Err(
+        "Select a map inside Warcraft III / Maps.".into(),
+    )));
+    assert!(!app.picking);
+    assert!(app.notice_error);
+    assert_eq!(app.form.read().unwrap(), original);
+}
+
+#[test]
+fn old_external_map_profiles_cannot_launch_a_hosting_worker() {
+    let directory = tempfile::tempdir().unwrap();
+    let map = directory.path().join("External.w3x");
+    fs::write(&map, b"fixture").unwrap();
+    let mut app = App::new(directory.path(), Some(map));
+    assert!(app.start_hosting().is_err());
+    assert!(app.worker.is_none());
 }
 
 #[test]
