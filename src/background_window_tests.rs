@@ -270,9 +270,61 @@ fn protection_start_has_a_deadline_when_the_target_does_not_pump_messages() {
     let started = Instant::now();
     let guard = Guard::start(fixture.child.id());
     assert!(started.elapsed() < Duration::from_millis(2500));
+    assert!(
+        guard.is_err(),
+        "A blocked window must not be reported ready"
+    );
     drop(guard);
     thread::sleep(Duration::from_secs(2));
     eventually(|| !is_transparent(window));
+}
+
+#[test]
+fn cold_start_waits_for_window_initialization_within_the_launch_deadline() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let window = fixture.window();
+    fixture.command("block");
+    let started = Instant::now();
+    let guard = Guard::start_until(
+        fixture.child.id(),
+        &AtomicBool::new(false),
+        started + Duration::from_secs(8),
+    )
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_secs(3));
+    assert!(is_transparent(window));
+    assert_eq!(unsafe { IsWindowEnabled(window) }, 0);
+    drop(guard);
+    eventually(|| !is_transparent(window) && unsafe { IsWindowEnabled(window) } != 0);
+}
+
+#[test]
+fn cancelling_cold_start_returns_promptly_and_restores_after_the_window_recovers() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let window = fixture.window();
+    fixture.command("block");
+    let stop = Arc::new(AtomicBool::new(false));
+    let cancel = stop.clone();
+    let setter = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(150));
+        cancel.store(true, Ordering::SeqCst);
+    });
+    let started = Instant::now();
+    assert!(
+        Guard::start_until(fixture.child.id(), &stop, started + Duration::from_secs(60)).is_err()
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    setter.join().unwrap();
+    assert!(
+        Guard::start(fixture.child.id()).is_err(),
+        "Cleanup must retain the lease"
+    );
+    thread::sleep(Duration::from_secs(4));
+    eventually(|| unsafe { GetPropW(window, MARK.as_ptr()).is_null() });
+    assert!(!is_transparent(window));
+    assert_ne!(unsafe { IsWindowEnabled(window) }, 0);
 }
 
 #[test]

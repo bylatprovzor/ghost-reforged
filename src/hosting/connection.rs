@@ -33,7 +33,11 @@ pub(super) fn open(
     repair: &mut super::repair::Repair,
 ) -> Result<Option<Connection>, String> {
     loop {
-        let Some(mut connection) = open_once(config, tx, stop)? else {
+        let opened = open_once(config, tx, stop);
+        if stop.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let Some(mut connection) = opened? else {
             return Ok(None);
         };
         let candidate = connection
@@ -74,24 +78,27 @@ fn open_once(
     let discovery = discovery::discover();
     let initialization_required = needs_initialization(&discovery);
     let mut launch_requested = false;
+    let deadline = Instant::now() + Duration::from_secs(60);
     let endpoint = match discovery {
         Ok(endpoint) => endpoint,
         Err(DiscoveryError::NotRunning | DiscoveryError::NoEndpoint) => {
             if matches!(discovery, Err(DiscoveryError::NotRunning)) {
                 status(tx, "Starting Warcraft III through Battle.net…");
-                background = background::launch(&mut launcher)?;
+                background = background::launch(&mut launcher, stop, deadline)?;
                 launch_requested = true;
             }
-            let deadline = Instant::now() + Duration::from_secs(60);
             loop {
-                launcher.poll()?;
+                if stop.load(Ordering::SeqCst) {
+                    return Ok(None);
+                }
+                launcher.poll(stop, deadline)?;
                 if background.is_none()
                     && let Ok(pid) = discovery::process_id()
                 {
                     background = Some(background::Background::attach(pid)?);
                 }
                 if let Some(game) = background.as_mut() {
-                    game.hide()?;
+                    game.hide_until(stop, deadline)?;
                 }
                 if stop.load(Ordering::SeqCst) {
                     return Ok(None);
@@ -101,8 +108,13 @@ fn open_once(
                     // An endpoint-less client can exit between discovery attempts.
                     drop(background.take());
                     status(tx, "Starting Warcraft III through Battle.net…");
-                    background = background::launch(&mut launcher)?;
+                    background = background::launch(&mut launcher, stop, deadline)?;
                 }
+                launcher.retry_if_needed(
+                    background.is_none() && matches!(discovered, Err(DiscoveryError::NotRunning)),
+                    stop,
+                    deadline,
+                )?;
                 match discovered {
                     Ok(endpoint)
                         if background
@@ -132,7 +144,7 @@ fn open_once(
         Some(game) => game,
         None => background::Background::attach(endpoint.pid)?,
     };
-    game.hide()?;
+    game.hide_until(stop, deadline)?;
     let mut client = Client::connect(&endpoint).map_err(|e| e.to_string())?;
     let identity = HostIdentity::open(endpoint.pid)?;
     client

@@ -9,7 +9,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM},
@@ -53,7 +53,23 @@ impl Drop for Lease {
 }
 
 impl Guard {
+    #[cfg(test)]
     pub fn start(pid: u32) -> Result<Self, String> {
+        Self::start_until(
+            pid,
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(2),
+        )
+    }
+
+    pub fn start_until(
+        pid: u32,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Hosting was stopped.".into());
+        }
         let (tx, rx) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
@@ -168,7 +184,22 @@ impl Guard {
                 });
             })
             .map_err(|_| "Cannot start background window protection.")?;
-        match rx.recv_timeout(Duration::from_secs(2)) {
+        // Cold clients can stop pumping window messages while loading. Keep the
+        // same protection worker alive until startup finishes or the user stops.
+        let result = loop {
+            if cancelled.load(Ordering::SeqCst) {
+                break Ok(Err("Hosting was stopped."));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break Err(mpsc::RecvTimeoutError::Timeout);
+            }
+            match rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                result => break result,
+            }
+        };
+        match result {
             Ok(Ok(thread_id)) => Ok(Self {
                 thread_id,
                 worker: Some(worker),

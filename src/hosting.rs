@@ -144,6 +144,9 @@ fn run(
     stop: &AtomicBool,
 ) -> Result<(), String> {
     let _lease = background::HostLease::acquire()?;
+    if stop.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     let mut repair = repair::Repair::default();
     let Some(connection::Connection {
         initialization_required,

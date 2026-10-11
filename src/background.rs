@@ -5,6 +5,8 @@ mod native {
         mem::{size_of, zeroed},
         path::PathBuf,
         ptr::null,
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
@@ -55,14 +57,20 @@ mod native {
 
     pub(crate) fn launch(
         quiet: &mut crate::background_launcher::Launch,
+        stop: &AtomicBool,
+        deadline: Instant,
     ) -> Result<Option<Background>, String> {
         let root = std::env::var_os("ProgramFiles(x86)")
             .ok_or("Warcraft III installation was not found.")?;
         let root = PathBuf::from(root);
         let launcher = root.join("Battle.net/Battle.net.exe");
         if launcher.is_file() {
-            quiet.prepare(&launcher)?;
+            quiet.prepare(&launcher, stop, deadline)?;
+            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(None);
+            }
             spawn(&launcher, "--exec=\"launch W3\"")?;
+            quiet.requested();
             return Ok(None);
         }
         let path = root.join("Warcraft III/_retail_/x86_64/Warcraft III.exe");
@@ -75,7 +83,7 @@ mod native {
         )?)?))
     }
 
-    fn spawn(path: &std::path::Path, arguments: &str) -> Result<u32, String> {
+    pub(crate) fn spawn(path: &std::path::Path, arguments: &str) -> Result<u32, String> {
         let mut command: Vec<u16> = format!("\"{}\" {arguments}", path.display())
             .encode_utf16()
             .chain(Some(0))
@@ -179,13 +187,26 @@ mod native {
             self.guard = None;
         }
         pub fn hide(&mut self) -> Result<(), String> {
+            self.hide_until(
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(2),
+            )
+        }
+        pub(crate) fn hide_until(
+            &mut self,
+            stop: &AtomicBool,
+            deadline: Instant,
+        ) -> Result<(), String> {
             if self.audio.is_none() {
                 self.audio = Some(crate::background_audio::Guard::start(self.pid)?);
             }
             if let Some(guard) = &self.guard {
                 guard.check()?;
             } else {
-                self.guard = Some(crate::background_window::Guard::start(self.pid)?);
+                self.guard = Some(
+                    crate::background_window::Guard::start_until(self.pid, stop, deadline)
+                        .map_err(|error| format!("Warcraft III: {error}"))?,
+                );
             }
             Ok(())
         }
@@ -262,13 +283,24 @@ impl Background {
     pub fn hide(&mut self) -> Result<(), String> {
         Ok(())
     }
+    pub(crate) fn hide_until(
+        &mut self,
+        _: &std::sync::atomic::AtomicBool,
+        _: std::time::Instant,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     pub fn reveal(&mut self) {}
     pub fn terminate(&mut self) -> Result<(), String> {
         Err("Restarting Warcraft III requires Windows.".into())
     }
 }
 #[cfg(not(windows))]
-pub(crate) fn launch(_: &mut LauncherLaunch) -> Result<Option<Background>, String> {
+pub(crate) fn launch(
+    _: &mut LauncherLaunch,
+    _: &std::sync::atomic::AtomicBool,
+    _: std::time::Instant,
+) -> Result<Option<Background>, String> {
     Err("Background hosting requires Windows.".into())
 }
 
@@ -279,7 +311,19 @@ pub(crate) use crate::background_launcher::Launch as LauncherLaunch;
 pub(crate) struct LauncherLaunch;
 #[cfg(not(windows))]
 impl LauncherLaunch {
-    pub(crate) fn poll(&mut self) -> Result<(), String> {
+    pub(crate) fn poll(
+        &mut self,
+        _: &std::sync::atomic::AtomicBool,
+        _: std::time::Instant,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    pub(crate) fn retry_if_needed(
+        &mut self,
+        _: bool,
+        _: &std::sync::atomic::AtomicBool,
+        _: std::time::Instant,
+    ) -> Result<(), String> {
         Ok(())
     }
     pub(crate) fn complete(&mut self) {}
