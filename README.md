@@ -4,12 +4,12 @@
 
 A Warcraft III auto-host for Windows, written in Rust.
 
-Download [ghost-reforged.exe](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.1/ghost-reforged.exe) and run it. No installation required.
+Download [ghost-reforged.exe](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.2/ghost-reforged.exe) and run it. No installation required.
 
-For a Start menu shortcut, run the [installer](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.1/GHost-Reforged-Setup-x64.exe), or paste this into PowerShell:
+For a Start menu shortcut, run the [installer](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.2/GHost-Reforged-Setup-x64.exe), or paste this into PowerShell:
 
 ```powershell
-irm https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.1/install.ps1 | iex
+irm https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.2/install.ps1 | iex
 ```
 
 Sign in to Battle.net, select a map and click **Host**. Windows 10/11, 64-bit. No administrator rights required.
