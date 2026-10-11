@@ -1,103 +1,25 @@
 //! Lobby commands use authenticated native senders, never names parsed from chat text.
 use crate::protocol::{Command, Lobby, OBSERVER_TEAM};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatCommand {
-    VoteStart,
-    VoteCancel,
-    VoteKick,
-    Players,
-    Help,
-}
+mod settings;
+pub use settings::{ChatCommand, CommandSettings};
+mod color;
+mod info;
+pub use color::ColorRequest;
 
-impl ChatCommand {
-    pub const ALL: [Self; 5] = [
-        Self::VoteStart,
-        Self::VoteCancel,
-        Self::VoteKick,
-        Self::Players,
-        Self::Help,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::VoteStart => "?votestart",
-            Self::VoteCancel => "?votecancel",
-            Self::VoteKick => "?votekick",
-            Self::Players => "?players",
-            Self::Help => "?help",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::VoteStart => {
-                "Start with a majority vote. Observers do not vote; votes expire after 60 seconds."
-            }
-            Self::VoteCancel => "Withdraw your start and kick votes before they pass.",
-            Self::VoteKick => {
-                "Use ?votekick <name>. At least 3 players; a majority of the other players must agree within 60 seconds."
-            }
-            Self::Players => "Show the player and start vote counts.",
-            Self::Help => "List enabled commands.",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct CommandSettings(pub BTreeSet<ChatCommand>);
-
-impl<'de> Deserialize<'de> for CommandSettings {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let names = BTreeSet::<String>::deserialize(deserializer)?;
-        let mut settings = BTreeSet::new();
-        if names.contains("ready") || names.contains("unready") {
-            settings.insert(ChatCommand::VoteKick);
-        }
-        for name in names {
-            let command = match name.as_str() {
-                "vote_start" => ChatCommand::VoteStart,
-                "vote_cancel" => ChatCommand::VoteCancel,
-                "vote_kick" => ChatCommand::VoteKick,
-                "players" => ChatCommand::Players,
-                "help" => ChatCommand::Help,
-                "ready" | "unready" => continue,
-                _ => return Err(serde::de::Error::custom("Unknown chat command")),
-            };
-            settings.insert(command);
-        }
-        Ok(Self(settings))
-    }
-}
-
-impl Default for CommandSettings {
-    fn default() -> Self {
-        Self(ChatCommand::ALL.into_iter().collect())
-    }
-}
-
-impl CommandSettings {
-    pub fn enabled(&self, command: ChatCommand) -> bool {
-        self.0.contains(&command)
-    }
-    pub fn set(&mut self, command: ChatCommand, enabled: bool) {
-        if enabled {
-            self.0.insert(command);
-        } else {
-            self.0.remove(&command);
-        }
-    }
+#[derive(Default)]
+pub struct Context<'a> {
+    pub status: &'a str,
+    pub history: Option<&'a crate::stats::History>,
 }
 
 #[derive(Default)]
 pub struct Outcome {
     pub start: bool,
     pub kick: Option<KickTarget>,
+    pub color: Option<ColorRequest>,
     pub reply: Option<Command>,
     pub activity: Option<String>,
 }
@@ -151,7 +73,7 @@ pub struct LobbyCommands {
     complete_roster: bool,
     last_command: BTreeMap<PlayerKey, u64>,
     vote_deadline: Option<u64>,
-    last_reply: Option<u64>,
+    current: Option<Lobby>,
 }
 
 impl LobbyCommands {
@@ -176,6 +98,7 @@ impl LobbyCommands {
                 ..Self::default()
             };
         }
+        self.current = Some(lobby.clone());
         let roster = electorate(lobby);
         self.complete_roster = roster.len() == lobby.humans(false);
         self.slots = lobby
@@ -207,7 +130,23 @@ impl LobbyCommands {
     }
 
     pub fn handle(&mut self, event: &Value, settings: &CommandSettings, now: u64) -> Outcome {
-        if !self.complete_roster || event["messageType"] != "ChatMessage" {
+        self.handle_at(
+            event,
+            settings,
+            now.saturating_mul(1000),
+            Context::default(),
+        )
+    }
+
+    pub fn handle_at(
+        &mut self,
+        event: &Value,
+        settings: &CommandSettings,
+        milliseconds: u64,
+        context: Context<'_>,
+    ) -> Outcome {
+        let now = milliseconds / 1000;
+        if event["messageType"] != "ChatMessage" {
             return Outcome::default();
         }
         let message = &event["payload"]["message"];
@@ -227,26 +166,63 @@ impl LobbyCommands {
         else {
             return Outcome::default();
         };
-        if !settings.enabled(command) || (command != ChatCommand::VoteKick && !argument.is_empty())
+        let argument = argument.trim();
+        if !settings.enabled(command)
+            || (!matches!(
+                command,
+                ChatCommand::VoteKick
+                    | ChatCommand::Yes
+                    | ChatCommand::From
+                    | ChatCommand::Stats
+                    | ChatCommand::Color
+                    | ChatCommand::Help
+            ) && !argument.is_empty())
         {
             return Outcome::default();
         }
         let Some(sender) = message["sender"].as_str() else {
             return Outcome::default();
         };
-        let mut candidates = self.roster.iter().filter(|key| key.name == sender);
+        let Some(lobby) = &self.current else {
+            return Outcome::default();
+        };
+        if message["channelName"]
+            .as_str()
+            .is_some_and(|name| name != lobby.lobby_name)
+        {
+            return Outcome::default();
+        }
+        let participants: BTreeSet<_> = lobby
+            .players
+            .iter()
+            .filter(|p| {
+                p.slot_status == 2 && p.slot_type == 0 && !p.is_self && !p.name.trim().is_empty()
+            })
+            .map(|p| PlayerKey {
+                id: p.id.filter(|id| *id >= 0),
+                name: p.name.clone(),
+            })
+            .collect();
+        let mut candidates = participants.iter().filter(|key| key.name == sender);
         let Some(key) = candidates.next().cloned() else {
             return Outcome::default();
         };
         if candidates.next().is_some()
-            || self.last_command.get(&key).is_some_and(|last| now <= *last)
+            || self
+                .last_command
+                .get(&key)
+                .is_some_and(|last| milliseconds.saturating_sub(*last) < 200)
         {
             return Outcome::default();
         }
-        self.last_command.insert(key.clone(), now);
+        if !command.read_only() && (!self.complete_roster || !self.roster.contains(&key)) {
+            return Outcome::default();
+        }
+        self.last_command.insert(key.clone(), milliseconds);
         let required = self.roster.len() / 2 + 1;
         let mut start = false;
         let mut kick = None;
+        let mut color = None;
         let reply = match command {
             ChatCommand::VoteStart => {
                 self.vote_deadline.get_or_insert(now + 60);
@@ -279,30 +255,60 @@ impl LobbyCommands {
                 message
             }
             ChatCommand::Players => self.counts(required),
-            ChatCommand::Help => format!(
-                "Commands: {}.",
-                ChatCommand::ALL
-                    .into_iter()
-                    .filter(|c| settings.enabled(*c))
-                    .map(|c| match c {
-                        ChatCommand::VoteStart => "?votestart = vote to start",
-                        ChatCommand::VoteCancel => "?votecancel = withdraw your votes",
-                        ChatCommand::VoteKick => "?votekick <name> = vote to kick",
-                        ChatCommand::Players => "?players = player/vote counts",
-                        ChatCommand::Help => "?help = this list",
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ")
+            ChatCommand::Help => info::help(settings, argument),
+            ChatCommand::Status => format!(
+                "{} {}{}",
+                context.status,
+                self.counts(required),
+                self.kick_status()
             ),
+            ChatCommand::From => info::regions(self.current.as_ref().unwrap(), argument),
+            ChatCommand::Map => info::map(self.current.as_ref().unwrap()),
+            ChatCommand::Stats => info::stats(context.history, &key.name, argument),
+            ChatCommand::Color => {
+                let (reply, request) =
+                    color::request(self.current.as_ref().unwrap(), &key.name, argument);
+                color = request;
+                reply
+            }
+            ChatCommand::Yes => {
+                let start_active =
+                    !self.votes.is_empty() && settings.enabled(ChatCommand::VoteStart);
+                let kick_active = self.kick.is_some() && settings.enabled(ChatCommand::VoteKick);
+                match argument.to_ascii_lowercase().as_str() {
+                    "" if start_active && kick_active => {
+                        "Two votes are active. Use ?yes start or ?yes kick.".into()
+                    }
+                    "" | "start" if start_active && argument != "kick" => {
+                        self.votes.insert(key.clone());
+                        start = self.votes.len() >= required;
+                        if start {
+                            "Vote passed. Starting the countdown.".into()
+                        } else {
+                            format!(
+                                "Start vote: {}/{} needed. Vote with ?yes.",
+                                self.votes.len(),
+                                required
+                            )
+                        }
+                    }
+                    "" | "kick" if kick_active => {
+                        let target = self.kick.as_ref().unwrap().target.name.clone();
+                        let (reply, request) = self.vote_kick(&key, &target, now);
+                        kick = request;
+                        reply
+                    }
+                    "" | "start" | "kick" => "No matching vote is active.".into(),
+                    _ => "Use ?yes, ?yes start or ?yes kick.".into(),
+                }
+            }
         };
-        let send = start || kick.is_some() || self.last_reply.is_none_or(|last| now > last);
-        if send {
-            self.last_reply = Some(now);
-        }
         Outcome {
             start,
             kick,
-            reply: send.then(|| Command::new("SendGameChatMessage", json!({"content":reply}))),
+            color,
+            reply: (!reply.is_empty())
+                .then(|| Command::new("SendGameChatMessage", json!({"content":reply}))),
             activity: Some(format!("{sender} · {}", command.name())),
         }
     }
@@ -372,6 +378,20 @@ impl LobbyCommands {
                 None,
             )
         }
+    }
+
+    fn kick_status(&self) -> String {
+        self.kick
+            .as_ref()
+            .map(|v| {
+                format!(
+                    " Kick {}: {}/{} votes.",
+                    v.target.name,
+                    v.voters.len(),
+                    (self.roster.len() - 1) / 2 + 1
+                )
+            })
+            .unwrap_or_default()
     }
 
     fn counts(&self, required: usize) -> String {

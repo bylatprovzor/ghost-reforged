@@ -12,6 +12,9 @@ fn lobby() -> Lobby {
 fn chat(sender: &str, content: &str) -> Value {
     json!({"messageType":"ChatMessage","payload":{"message":{"source":"gameChat","sender":sender,"content":content}}})
 }
+
+#[path = "commands/extended_tests.rs"]
+mod extended;
 #[test]
 fn majority_excludes_self_observers_and_ai_and_counts_each_player_once() {
     let mut commands = LobbyCommands::default();
@@ -136,9 +139,10 @@ fn help_explains_enabled_commands_without_changing_votes_with_a_blank_host() {
         assert_eq!(reply.message, "SendGameChatMessage");
         let text = reply.payload["content"].as_str().unwrap();
         assert!(text.starts_with("Commands: "));
-        assert!(text.contains("?votestart = vote to start"));
-        assert!(text.contains("?votekick <name> = vote to kick"));
-        assert!(text.len() <= 250);
+        assert!(text.contains("?votestart"));
+        assert!(text.contains("?votekick"));
+        assert!(text.contains("?help <command>"));
+        assert!(text.len() <= 240);
         assert_eq!(commands.votes, votes);
         assert_eq!(commands.kick.as_ref().unwrap().voters, kick_voters);
     }

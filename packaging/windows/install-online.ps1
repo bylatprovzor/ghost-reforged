@@ -1,4 +1,4 @@
-param([string]$Version = 'v0.2.4', [string]$InstallDirectory, [switch]$NoShortcut)
+param([string]$Version = 'v0.2.5', [string]$InstallDirectory, [switch]$NoShortcut)
 & {
     param($ReleaseVersion, $Destination, $SkipShortcut)
     $ErrorActionPreference = 'Stop'

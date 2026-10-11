@@ -28,6 +28,8 @@ impl Client {
             let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(2)) else {
                 continue;
             };
+            // Small lobby replies must not wait for TCP packet coalescing.
+            let _ = stream.set_nodelay(true);
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
             let url = format!("ws://127.0.0.1:{port}/webui-socket/{}", endpoint.session);

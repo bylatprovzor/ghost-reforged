@@ -4,17 +4,19 @@
 
 A Warcraft III auto-host for Windows, written in Rust.
 
-Download [ghost-reforged.exe](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.4/ghost-reforged.exe) and run it. No installation required.
+Download [ghost-reforged.exe](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.5/ghost-reforged.exe) and run it. No installation required.
 
-For a Start menu shortcut, run the [installer](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.4/GHost-Reforged-Setup-x64.exe), or paste this into PowerShell:
+For a Start menu shortcut, run the [installer](https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.5/GHost-Reforged-Setup-x64.exe), or paste this into PowerShell:
 
 ```powershell
-irm https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.4/install.ps1 | iex
+irm https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.5/install.ps1 | iex
 ```
 
 Sign in to Battle.net, select a map from `Documents/Warcraft III/Maps` and click **Host**. Windows 10/11, 64-bit. No administrator rights required.
 
 Auto start defaults to **Full**. Choose a minimum player count or use **Force start**. Players can use **?votestart** and **?votekick name**. Edit commands and the welcome message in **Options**, including while hosting. **Stop Hosting** closes the current lobby and stops new ones. Save presets in **Profiles**.
+
+**?status** shows what the lobby is waiting for; **?yes** joins the active vote; **?from [name]** shows Battle.net regions; **?map** shows the map; **?color color** changes your color when the map permits it; **?stats [name]** shows games started here and first/last seen dates. Statistics stay on the hosting computer and survive restarts. Use **?help** for the enabled list or **?help command** for details.
 
 Closing the window keeps hosting in the system tray. Click the ghost to reopen it, or right-click and choose **Quit** to exit.
 

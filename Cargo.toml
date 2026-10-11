@@ -1,6 +1,6 @@
 [package]
 name = "ghost-reforged"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 license = "Apache-2.0"
 description = "GHost Reforged — configurable Warcraft III auto host"
@@ -10,7 +10,7 @@ repository = "https://github.com/shideneyu/ghost-reforged"
 
 [features]
 default = ["launcher"]
-launcher = ["dep:iced", "dep:fs2", "dep:tempfile", "dep:image"]
+launcher = ["dep:iced", "dep:image"]
 
 [[bin]]
 name = "ghost-reforged"
@@ -27,8 +27,8 @@ toml = "0.8"
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio", "crisp", "svg", "image-without-codecs", "advanced"], optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
-fs2 = { version = "0.4", optional = true }
-tempfile = { version = "3", optional = true }
+fs2 = "0.4"
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 sha2 = "0.10"

@@ -171,7 +171,7 @@ pub struct Profiles {
 impl Default for Profiles {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             selected: 0,
             items: vec![Profile::default()],
         }
@@ -180,7 +180,7 @@ impl Default for Profiles {
 
 impl Profiles {
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1
+        if self.version != 2
             || self.items.is_empty()
             || self.items.len() > 30
             || self.selected >= self.items.len()

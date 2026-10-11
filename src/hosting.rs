@@ -1,4 +1,5 @@
 mod activity;
+mod chat;
 mod control;
 use control::{Reservation, dispatch, reserve};
 mod connection;

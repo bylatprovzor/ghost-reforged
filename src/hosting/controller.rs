@@ -52,7 +52,7 @@ pub(super) fn run(
     ));
     let mut visual_state = None;
     let mut activity = activity::ActivityTracker::default();
-    let mut chat = crate::commands::LobbyCommands::default();
+    let mut chat = super::chat::Chat::new(engine.config.stats_path.as_deref());
     let mut announcements = crate::welcome::Announcements::default();
     let mut start_requested = None;
     let mut kick_requested: Option<(crate::commands::KickTarget, u64, kick::RefreshGate)> = None;
@@ -94,9 +94,7 @@ pub(super) fn run(
                 Some(event)
             } else {
                 client
-                    .receive_with_timeout(
-                        snapshot_interval(&engine).min(Duration::from_millis(250)),
-                    )
+                    .receive_with_timeout(Duration::from_millis(50))
                     .map_err(|e| e.to_string())?
             };
             if event.as_ref().is_some_and(|e| {
@@ -203,8 +201,16 @@ pub(super) fn run(
                     start_requested = None;
                 }
             }
-            let outcome =
-                control::chat_command(&engine, &mut chat, event.as_ref(), identity_ok, now);
+            let outcome = chat.process(
+                &engine,
+                event.as_ref(),
+                identity_ok,
+                started.elapsed(),
+                &mut commands,
+            );
+            if let Some(warning) = chat.warning() {
+                let _ = tx.send(Event::Activity(Activity::Command(warning)));
+            }
             if let Some(line) = outcome.activity {
                 let _ = tx.send(Event::Activity(Activity::Command(line)));
             }
@@ -222,6 +228,9 @@ pub(super) fn run(
                     .as_ref()
                     .is_some_and(|event| event["messageType"] == "GameLobbySetup"),
             ) {
+                if let Activity::GameStarted(name) = &event {
+                    chat.started(name);
+                }
                 track_announcement(&event, &mut announcements);
                 let _ = tx.send(Event::Activity(event));
             }
@@ -400,7 +409,7 @@ pub(super) fn run(
         kick_requested = None;
         manual_kick = Default::default();
         slot_edit = Default::default();
-        chat = Default::default();
+        chat.reset();
         deferred_controls
             .retain(|control| matches!(control, Control::Settings(_) | Control::StartRule { .. }));
         let _ = tx.send(Event::LobbyCleared);

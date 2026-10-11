@@ -23,6 +23,7 @@ impl App {
             empty_rehost_seconds: p.empty_rehost_seconds,
             auto_start: true,
             commands: p.commands,
+            stats_path: Some(self.data_directory.join("players.json")),
             welcome: p.welcome,
             resume_lobby: true,
             // LobbyStart owns the game's native countdown. Never add a second one.

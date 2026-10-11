@@ -47,13 +47,22 @@ impl Store {
             path: directory.join("profiles.json"),
             _lock: lock,
         };
-        let profiles = match fs::read(&store.path) {
+        let mut profiles = match fs::read(&store.path) {
             Ok(bytes) => {
                 serde_json::from_slice::<Profiles>(&bytes).map_err(|_| StorageError::Format)?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Profiles::default(),
             Err(error) => return Err(error.into()),
         };
+        if profiles.version == 1 {
+            for profile in &mut profiles.items {
+                profile
+                    .commands
+                    .0
+                    .extend(ghost_reforged::commands::ChatCommand::NEW);
+            }
+            profiles.version = 2;
+        }
         profiles.validate().map_err(StorageError::Invalid)?;
         Ok((store, profiles))
     }

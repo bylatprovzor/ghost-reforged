@@ -6,6 +6,7 @@ pub mod engine;
 pub mod hosting;
 pub mod protocol;
 pub mod recovery;
+pub mod stats;
 pub mod transport;
 pub mod welcome;
 pub mod window_capture;

@@ -85,6 +85,10 @@ pub fn has_online_listing(payload: &Value) -> bool {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lobby {
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub is_custom_players: bool,
+    #[serde(default)]
+    pub available_team_colors: Value,
     pub is_host: bool,
     pub lobby_name: String,
     pub players: Vec<Player>,
@@ -95,11 +99,21 @@ pub struct Lobby {
 #[serde(rename_all = "camelCase")]
 pub struct MapData {
     pub map_path: String,
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub map_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Player {
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub player_region: String,
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub gateway_id: Option<i32>,
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub color: Option<u8>,
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub color_change_enabled: bool,
     #[serde(default)]
     pub id: Option<i64>,
     #[serde(default)]
@@ -113,6 +127,16 @@ pub struct Player {
     pub team_change_enabled: bool,
     #[serde(default)]
     pub slot_type_change_enabled: bool,
+}
+
+// Optional chat metadata must never discard the roster used to cancel a start.
+fn optional_metadata<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 impl Lobby {

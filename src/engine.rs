@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 mod lifecycle;
 mod recovery;
 mod start;
+mod status;
 use start::StartRoster;
 
 #[derive(Clone, Debug, PartialEq)]

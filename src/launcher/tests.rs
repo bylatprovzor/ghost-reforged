@@ -65,7 +65,7 @@ fn corrupt_and_future_profiles_are_preserved() {
     assert!(matches!(Store::open(dir.path()), Err(StorageError::Format)));
     assert_eq!(fs::read_to_string(&path).unwrap(), "broken!");
     let future = Profiles {
-        version: 2,
+        version: 3,
         ..Profiles::default()
     };
     let bytes = serde_json::to_vec(&future).unwrap();
@@ -75,6 +75,37 @@ fn corrupt_and_future_profiles_are_preserved() {
         Err(StorageError::Invalid(_))
     ));
     assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn new_commands_migrate_once_without_reenabling_user_disabled_commands() {
+    use ghost_reforged::commands::ChatCommand;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("profiles.json");
+    let mut legacy = Profiles {
+        version: 1,
+        ..Profiles::default()
+    };
+    legacy.items[0]
+        .commands
+        .0
+        .retain(|c| !ChatCommand::NEW.contains(c));
+    legacy.items[0].commands.set(ChatCommand::VoteKick, false);
+    fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let (store, mut upgraded) = Store::open(dir.path()).unwrap();
+    assert_eq!(upgraded.version, 2);
+    assert!(!upgraded.items[0].commands.enabled(ChatCommand::VoteKick));
+    assert!(
+        ChatCommand::NEW
+            .into_iter()
+            .all(|c| upgraded.items[0].commands.enabled(c))
+    );
+    upgraded.items[0].commands.set(ChatCommand::Color, false);
+    store.save(&upgraded).unwrap();
+    drop(store);
+    let (_, loaded) = Store::open(dir.path()).unwrap();
+    assert!(!loaded.items[0].commands.enabled(ChatCommand::Color));
+    assert!(!loaded.items[0].commands.enabled(ChatCommand::VoteKick));
 }
 
 #[test]

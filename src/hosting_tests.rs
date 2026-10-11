@@ -6,11 +6,11 @@ mod action_tests;
 #[path = "hosting_slot_tests.rs"]
 mod slot_tests;
 
-fn event(kind: &str, payload: Value) -> Value {
+pub(super) fn event(kind: &str, payload: Value) -> Value {
     json!({"messageType":kind,"payload":payload})
 }
 
-fn lobby(occupied: bool) -> Value {
+pub(super) fn lobby(occupied: bool) -> Value {
     event(
         "GameLobbySetup",
         json!({
@@ -25,7 +25,7 @@ fn lobby(occupied: bool) -> Value {
     )
 }
 
-fn ready(occupied: bool) -> Engine {
+pub(super) fn ready(occupied: bool) -> Engine {
     let mut engine = Engine::new(Config {
         maps: vec!["C:/Maps/test.w3x".into()],
         host_mode: HostMode::Observer,
@@ -87,8 +87,14 @@ fn help_and_counts_remain_available_during_native_countdown_without_accepting_vo
                 "source":"gameChat","sender":"Player","content":command
             }}),
         );
-        let outcome =
-            control::chat_command(&engine, &mut chat, Some(&message), true, 2 + offset as u64);
+        let outcome = control::chat_command(
+            &engine,
+            &mut chat,
+            Some(&message),
+            true,
+            Duration::from_secs(2 + offset as u64),
+            None,
+        );
         assert!(!outcome.start && outcome.kick.is_none());
         assert_eq!(outcome.reply.is_some(), offset < 2, "{command}");
         if command == "?help" {
@@ -106,18 +112,32 @@ fn help_and_counts_remain_available_during_native_countdown_without_accepting_vo
         }}),
     );
     assert!(
-        control::chat_command(&engine, &mut chat, Some(&message), false, 7)
-            .reply
-            .is_none()
+        control::chat_command(
+            &engine,
+            &mut chat,
+            Some(&message),
+            false,
+            Duration::from_secs(7),
+            None
+        )
+        .reply
+        .is_none()
     );
     engine
         .config
         .commands
         .set(crate::commands::ChatCommand::Help, false);
     assert!(
-        control::chat_command(&engine, &mut chat, Some(&message), true, 7)
-            .reply
-            .is_none()
+        control::chat_command(
+            &engine,
+            &mut chat,
+            Some(&message),
+            true,
+            Duration::from_secs(7),
+            None
+        )
+        .reply
+        .is_none()
     );
     engine
         .config
@@ -125,9 +145,16 @@ fn help_and_counts_remain_available_during_native_countdown_without_accepting_vo
         .set(crate::commands::ChatCommand::Help, true);
     engine.phase = Phase::InGame;
     assert!(
-        control::chat_command(&engine, &mut chat, Some(&message), true, 7)
-            .reply
-            .is_none()
+        control::chat_command(
+            &engine,
+            &mut chat,
+            Some(&message),
+            true,
+            Duration::from_secs(7),
+            None
+        )
+        .reply
+        .is_none()
     );
 }
 

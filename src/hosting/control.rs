@@ -5,9 +5,10 @@ pub(super) fn chat_command(
     chat: &mut crate::commands::LobbyCommands,
     event: Option<&Value>,
     identity_ok: bool,
-    now: u64,
+    elapsed: Duration,
+    history: Option<&crate::stats::History>,
 ) -> crate::commands::Outcome {
-    use crate::commands::ChatCommand;
+    let now = elapsed.as_secs();
     if !matches!(
         engine.phase,
         Phase::Lobby | Phase::Countdown(_) | Phase::Starting(_)
@@ -21,11 +22,17 @@ pub(super) fn chat_command(
     };
     let mut settings = engine.config.commands.clone();
     if matches!(engine.phase, Phase::Starting(_)) {
-        settings
-            .0
-            .retain(|c| matches!(c, ChatCommand::Help | ChatCommand::Players));
+        settings.0.retain(|c| c.read_only());
     }
-    chat.handle(event, &settings, now)
+    chat.handle_at(
+        event,
+        &settings,
+        elapsed.as_millis() as u64,
+        crate::commands::Context {
+            status: &engine.lobby_status(now),
+            history,
+        },
+    )
 }
 
 pub(super) fn dispatch(
