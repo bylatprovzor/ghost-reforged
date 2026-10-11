@@ -12,7 +12,7 @@ For a Start menu shortcut, run the [installer](https://github.com/shideneyu/ghos
 irm https://github.com/shideneyu/ghost-reforged/releases/download/v0.2.2/install.ps1 | iex
 ```
 
-Sign in to Battle.net, select a map and click **Host**. Windows 10/11, 64-bit. No administrator rights required.
+Sign in to Battle.net, select a map from `Documents/Warcraft III/Maps` and click **Host**. Windows 10/11, 64-bit. No administrator rights required.
 
 Auto start defaults to **Full**. Choose a minimum player count or use **Force start**. Players can use **?votestart** and **?votekick name**. Edit commands and the welcome message in **Options**, including while hosting. **Stop Hosting** closes the current lobby and stops new ones. Save presets in **Profiles**.
 

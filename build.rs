@@ -16,6 +16,13 @@ fn main() {
             .flag_if_supported("/std:c++17")
             .compile("ghost_audio_fixture");
         if std::env::var_os("CARGO_FEATURE_LAUNCHER").is_some() {
+            println!("cargo:rerun-if-changed=src/native/map_dialog.cpp");
+            cc::Build::new()
+                .cpp(true)
+                .file("src/native/map_dialog.cpp")
+                .flag_if_supported("/std:c++17")
+                .compile("ghost_map_dialog");
+            println!("cargo:rustc-link-lib=shell32");
             println!("cargo:rerun-if-changed=src/native/video.cpp");
             cc::Build::new()
                 .cpp(true)
