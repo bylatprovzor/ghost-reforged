@@ -1,5 +1,7 @@
 # GHost Reforged
 
+<img width="1710" height="1230" alt="image" src="https://github.com/user-attachments/assets/e330961d-d3ec-4e68-9d1c-1814ac907147" />
+
 A Warcraft III auto-host for Windows, written in Rust.
 
 1. Download the Windows ZIP from [Releases](https://github.com/shideneyu/ghost-reforged/releases) and extract it.
