@@ -159,3 +159,22 @@ fn optional_placeholder_metadata_never_discards_the_essential_roster() {
     assert!(color::request(&roster, "Player1", "blue").1.is_none());
     assert!(info::regions(&roster, "Player1").contains("unknown"));
 }
+
+#[test]
+fn native_color_ack_follows_identity_when_a_custom_map_moves_the_player() {
+    let mut roster = lobby();
+    roster.players[1].color = Some(0);
+    roster.players[1].color_change_enabled = true;
+    let request = color::request(&roster, "Player1", "blue").1.unwrap();
+    assert!(request.confirm(&roster).is_some());
+    // Warcraft reassigns a custom-map slot when its color identifies that slot.
+    roster.players[1].slot = 7;
+    roster.players[1].color = Some(1);
+    assert!(request.applied(&roster));
+    assert!(request.confirm(&roster).is_none()); // Never send against the old slot.
+    roster.players[1].id = Some(99);
+    assert!(!request.applied(&roster));
+    roster.players[1].id = Some(1);
+    roster.players[1].name = "Replacement".into();
+    assert!(!request.applied(&roster));
+}

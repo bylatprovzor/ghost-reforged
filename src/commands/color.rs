@@ -110,27 +110,32 @@ pub(super) fn request(lobby: &Lobby, sender: &str, name: &str) -> (String, Optio
 }
 
 impl ColorRequest {
-    fn current<'a>(&self, lobby: &'a Lobby) -> Option<&'a Player> {
+    fn current<'a>(&self, lobby: &'a Lobby, same_slot: bool) -> Option<&'a Player> {
         if !lobby.is_host || lobby.lobby_name != self.lobby {
             return None;
         }
-        lobby.players.iter().find(|p| {
-            p.slot == self.player.slot
+        let mut matches = lobby.players.iter().filter(|p| {
+            (!same_slot || p.slot == self.player.slot)
                 && p.id == self.player.id
                 && p.name == self.player.name
                 && p.team == self.player.team
                 && p.slot_status == 2
                 && p.slot_type == 0
                 && !p.is_self
-        })
+                && !p.is_observer
+        });
+        let player = matches.next()?;
+        matches.next().is_none().then_some(player)
     }
     pub(crate) fn confirm(&self, lobby: &Lobby) -> Option<Command> {
-        let player = self.current(lobby)?;
+        let player = self.current(lobby, true)?;
         allowed(lobby, player, self.color)
             .then(|| Command::new("SetColor", json!({"slot":player.slot,"color":self.color})))
     }
     pub(crate) fn applied(&self, lobby: &Lobby) -> bool {
-        self.current(lobby)
+        // Custom-player maps implement color selection by moving the player
+        // to the corresponding slot. Follow identity for the acknowledgement.
+        self.current(lobby, false)
             .is_some_and(|p| p.color == Some(self.color))
     }
     pub(crate) fn response(&self, success: bool) -> String {
