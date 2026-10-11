@@ -10,8 +10,8 @@ pub mod transport;
 pub mod welcome;
 pub mod window_capture;
 
-pub mod alias;
 pub mod background;
+mod host_identity;
 #[cfg(test)]
 mod tests;
 

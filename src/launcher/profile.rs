@@ -6,7 +6,8 @@ use std::path::PathBuf;
 pub struct Profile {
     pub title: String,
     pub map: Option<PathBuf>,
-    pub bot_name: String,
+    #[serde(default, rename = "bot_name", skip_serializing)]
+    pub legacy_bot_name: serde::de::IgnoredAny,
     pub lobby_pattern: String,
     #[serde(default)]
     pub automatic_name: bool,
@@ -75,7 +76,7 @@ impl Default for Profile {
         Self {
             title: "Profile 1".into(),
             map: None,
-            bot_name: "Ghost".into(),
+            legacy_bot_name: serde::de::IgnoredAny,
             lobby_pattern: "Game #{n}".into(),
             automatic_name: true,
             next_number: 1,
@@ -114,15 +115,6 @@ impl Profile {
             || self.title.chars().any(char::is_control)
         {
             return Err("Profile names must contain 1 to 60 characters.".into());
-        }
-        if self.bot_name.trim().is_empty()
-            || self.bot_name.len() > 15
-            || !self
-                .bot_name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b" _-+".contains(&b))
-        {
-            return Err("Host names must contain 1 to 15 ASCII characters, without #.".into());
         }
         if !self.lobby_pattern.contains("{n}")
             || self.lobby_pattern.replace("{n}", "4294967295").len() > 31

@@ -101,7 +101,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .align_y(Alignment::Center)
         ]
         .spacing(2),
-        field("Host name", &app.form.profile.bot_name, Field::Bot),
         row![
             field_enabled(
                 "Game name",
@@ -260,7 +259,7 @@ fn lobby(app: &App) -> Element<'_, Message> {
         .as_ref()
         .and_then(|l| l.slots.iter().find(|s| s.own))
         .map(|s| s.name.as_str())
-        .unwrap_or(&app.form.profile.bot_name);
+        .unwrap_or("");
     let contents = column![
         row![
             text(name)

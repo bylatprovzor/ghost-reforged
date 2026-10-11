@@ -90,9 +90,6 @@ fn failed_save_does_not_replace_the_in_memory_profile() {
 fn invalid_profiles_cannot_be_persisted() {
     let dir = tempfile::tempdir().unwrap();
     let (store, mut profiles) = Store::open(dir.path()).unwrap();
-    profiles.items[0].bot_name = "Person#1234".into();
-    assert!(store.save(&profiles).is_err());
-    profiles.items[0].bot_name = "Ghost".into();
     profiles.items[0].lobby_pattern = "\u{e9}".repeat(11) + "{n}";
     assert!(store.save(&profiles).is_err());
     profiles.items[0].lobby_pattern = "SC #{n}".into();
@@ -105,13 +102,13 @@ fn new_profile_and_switch_save_edits_without_losing_existing_settings() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path(), None);
     let _ = app.update(Message::Edit(Field::Number, "42".into()));
-    let _ = app.update(Message::Edit(Field::Bot, "Ghost++".into()));
+    let _ = app.update(Message::Edit(Field::Pattern, "Friends #{n}".into()));
     let _ = app.update(Message::NewProfile);
     assert_eq!(app.profiles.selected, 1);
     assert_eq!(app.profiles.items[0].next_number, 42);
     let _ = app.update(Message::SelectProfile(0));
     assert_eq!(app.form.number, "42");
-    assert_eq!(app.form.profile.bot_name, "Ghost++");
+    assert_eq!(app.form.profile.lobby_pattern, "Friends #{n}");
 }
 
 #[test]
@@ -216,15 +213,15 @@ fn preview_modal_requires_an_image_and_blocks_covered_controls_until_closed() {
     let _ = app.update(Message::OpenPreview);
     assert!(app.preview.expanded);
     assert!(app.preview.image.is_some());
-    let _ = app.update(Message::Edit(Field::Bot, "Changed".into()));
-    assert_eq!(app.form.profile.bot_name, "Ghost");
+    let _ = app.update(Message::Edit(Field::Pattern, "Changed #{n}".into()));
+    assert_eq!(app.form.profile.lobby_pattern, "Game #{n}");
     let _ = app.update(Message::ClosePreview);
     assert!(!app.preview.expanded);
     let _ = app.update(Message::Animate(
         std::time::Instant::now() + std::time::Duration::from_secs(1),
     ));
-    let _ = app.update(Message::Edit(Field::Bot, "Changed".into()));
-    assert_eq!(app.form.profile.bot_name, "Changed");
+    let _ = app.update(Message::Edit(Field::Pattern, "Changed #{n}".into()));
+    assert_eq!(app.form.profile.lobby_pattern, "Changed #{n}");
 }
 
 #[test]
@@ -265,4 +262,30 @@ fn picker_completions_are_processed_even_when_the_preview_is_open() {
         assert!(!app.picking);
         assert_eq!(app.form.profile.map, selected);
     }
+}
+
+#[test]
+fn upgrading_profiles_discards_the_old_host_name_and_keeps_the_map_and_counter() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut saved = serde_json::to_value(Profiles::default()).unwrap();
+    saved["items"][0]["bot_name"] = serde_json::json!("Ghost++");
+    saved["items"][0]["next_number"] = serde_json::json!(42);
+    saved["items"][0]["map"] = serde_json::json!("C:/Maps/Test.w3x");
+    fs::write(
+        dir.path().join("profiles.json"),
+        serde_json::to_vec(&saved).unwrap(),
+    )
+    .unwrap();
+    let (store, profiles) = Store::open(dir.path()).unwrap();
+    assert_eq!(profiles.items[0].next_number, 42);
+    assert_eq!(
+        profiles.items[0].map.as_deref(),
+        Some(std::path::Path::new("C:/Maps/Test.w3x"))
+    );
+    store.save(&profiles).unwrap();
+    let updated: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.path().join("profiles.json")).unwrap()).unwrap();
+    assert!(updated["items"][0].get("bot_name").is_none());
+    drop(store);
+    assert_eq!(Store::open(dir.path()).unwrap().1, profiles);
 }

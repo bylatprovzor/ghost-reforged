@@ -32,7 +32,7 @@ impl App {
             max_games: if p.rehost { 0 } else { 1 },
             ..Config::default()
         };
-        self.worker = Some(Worker::start(config, p.bot_name)?);
+        self.worker = Some(Worker::start(config)?);
         self.lobby = None;
         self.hosting_status = "Connecting…".into();
         self.log("Auto Host started.");
@@ -140,7 +140,6 @@ impl App {
             self.save()?;
             if let Some(worker) = &self.worker {
                 worker.send(Control::Settings(settings));
-                worker.send(Control::HostName(profile.bot_name));
             }
             Ok(())
         });

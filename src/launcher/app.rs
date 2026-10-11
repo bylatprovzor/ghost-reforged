@@ -23,7 +23,6 @@ pub enum Page {
 #[derive(Debug, Clone, Copy)]
 pub enum Field {
     Title,
-    Bot,
     Pattern,
     Number,
     Players,
@@ -357,7 +356,6 @@ impl App {
             Message::Edit(field, value) => {
                 match field {
                     Field::Title => self.form.profile.title = value,
-                    Field::Bot => self.form.profile.bot_name = value,
                     Field::Pattern => {
                         self.form.profile.lobby_pattern = value;
                         self.form.profile.automatic_name = false;

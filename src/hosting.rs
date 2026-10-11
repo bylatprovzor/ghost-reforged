@@ -10,10 +10,10 @@ pub use slots::{SlotAction, SlotRequest};
 mod settings;
 mod shutdown;
 use crate::{
-    alias::Verification,
     background,
     config::Config,
     engine::{Engine, Phase},
+    host_identity::HostIdentity,
     protocol::{Command, Lobby},
 };
 pub use activity::Activity;
@@ -40,7 +40,6 @@ pub enum Control {
     Start,
     StartRule { minimum: u8, full: bool },
     Settings(LiveSettings),
-    HostName(String),
     Slot { slot: u8, open: bool },
     Kick(KickRequest),
     EditSlot(SlotRequest),
@@ -97,7 +96,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn start(config: Config, alias: String) -> Result<Self, String> {
+    pub fn start(config: Config) -> Result<Self, String> {
         config.validate().map_err(|e| e.to_string())?;
         config.ensure_supported().map_err(|e| e.to_string())?;
         let (commands, rx) = mpsc::channel();
@@ -107,7 +106,7 @@ impl Worker {
         thread::Builder::new()
             .name("ghost-hosting".into())
             .spawn(move || {
-                let result = run(config, alias, &rx, &tx, &cancelled);
+                let result = run(config, &rx, &tx, &cancelled);
                 let _ = tx.send(Event::Finished(result));
             })
             .map_err(|_| "The hosting worker could not be started.")?;
@@ -140,7 +139,6 @@ fn status(tx: &Sender<Event>, text: &str) {
 
 fn run(
     config: Config,
-    mut name: String,
     rx: &Receiver<Control>,
     tx: &Sender<Event>,
     stop: &AtomicBool,
@@ -150,10 +148,10 @@ fn run(
     let Some(connection::Connection {
         initialization_required,
         mut client,
-        mut alias,
+        mut identity,
         mut game,
         mut pending,
-    }) = connection::open(&config, name.clone(), tx, stop, &mut repair)?
+    }) = connection::open(&config, tx, stop, &mut repair)?
     else {
         return Ok(());
     };
@@ -167,8 +165,7 @@ fn run(
     let mut snapshot = None;
     let mut reserved = None;
     let mut deferred_controls = VecDeque::new();
-    let mut alias_ok = false;
-    let mut alias_refresh = false;
+    let mut identity_ok = false;
     let _ = tx.send(Event::ClientChanged(Some(game.pid())));
     let mut visual_state = None;
     let mut activity = activity::ActivityTracker::default();
@@ -179,20 +176,12 @@ fn run(
     let mut manual_kick = kick::PendingKick::default();
     let mut slot_edit = slots::PendingSlot::default();
     loop {
+        identity.check_timeout()?;
         let now = started.elapsed().as_secs();
         let control = deferred_controls.pop_front().or_else(|| rx.try_recv().ok());
         if stop.load(Ordering::SeqCst) || matches!(control, Some(Control::Stop)) {
+            identity.cancel_creation()?;
             return shutdown::close(&engine, &mut client, &mut pending);
-        }
-        if let Some(Control::HostName(next)) = &control
-            && alias.rename(next)?
-        {
-            name = next.clone();
-            alias_ok = false;
-            alias_refresh = true;
-            client
-                .send("SendGameLobbySetup", json!({}))
-                .map_err(|e| e.to_string())?;
         }
         if let Some(Control::Settings(settings)) = &control {
             chat.apply_settings(&settings.commands);
@@ -211,11 +200,10 @@ fn run(
         } else {
             client.receive().map_err(|e| e.to_string())?
         };
-        if event
-            .as_ref()
-            .is_some_and(|e| e["messageType"] == "GameLobbySetup" && !alias.matches(&e["payload"]))
-        {
-            alias_ok = false;
+        if event.as_ref().is_some_and(|e| {
+            e["messageType"] == "GameLobbySetup" && !HostIdentity::matches(&e["payload"])
+        }) {
+            identity_ok = false;
         }
         let repair_lobby =
             if let Some(candidate) = repair.observe(&engine.phase, event.as_ref(), now) {
@@ -226,15 +214,34 @@ fn run(
         let mut commands = if repair_lobby {
             Vec::new()
         } else {
-            dispatch(&mut engine, event.as_ref(), control.as_ref(), alias_ok, now)
+            dispatch(
+                &mut engine,
+                event.as_ref(),
+                control.as_ref(),
+                identity_ok,
+                now,
+            )
         };
+        if !matches!(
+            engine.phase,
+            Phase::Creating(_) | Phase::Lobby | Phase::Countdown(_) | Phase::Starting(_)
+        ) {
+            identity.cancel_creation()?;
+            identity_ok = false;
+        }
+        if let Some(event) = &event
+            && event["messageType"] == "GameLobbySetup"
+            && engine.owned_lobby(now).is_some()
+        {
+            identity_ok = identity.confirm(&event["payload"])?;
+        }
         if let Some((command, line)) = manual_kick.confirm(
             &engine,
             now,
             event
                 .as_ref()
                 .is_some_and(|e| e["messageType"] == "GameLobbySetup"),
-            alias_ok,
+            identity_ok,
             event.is_none(),
         ) {
             commands.extend(command);
@@ -255,7 +262,7 @@ fn run(
                 .as_ref()
                 .is_some_and(|e| e["messageType"] == "GameLobbySetup"),
             event.is_none(),
-            alias_ok,
+            identity_ok,
         );
         commands.extend(slot_commands);
         if let Some(line) = line {
@@ -268,7 +275,7 @@ fn run(
                     .as_ref()
                     .is_some_and(|e| e["messageType"] == "GameLobbySetup"),
                 event.is_none(),
-                alias_ok,
+                identity_ok,
             ) {
                 kick::Refresh::Request => commands.push(Command::empty("SendGameLobbySetup")),
                 kick::Refresh::Confirm => {
@@ -284,14 +291,14 @@ fn run(
         if let Some(requested) = start_requested {
             if now.saturating_sub(requested) >= 5 || matches!(engine.phase, Phase::Starting(_)) {
                 start_requested = None;
-            } else if alias_ok && engine.can_start(now) {
+            } else if identity_ok && engine.can_start(now) {
                 commands.extend(engine.start_now(now));
                 start_requested = None;
             }
         }
         if matches!(engine.phase, Phase::Lobby | Phase::Countdown(_)) {
             chat.observe(engine.owned_lobby(now), now);
-            if alias_ok && let Some(event) = &event {
+            if identity_ok && let Some(event) = &event {
                 let outcome = chat.handle(event, &engine.config.commands, now);
                 if let Some(line) = outcome.activity {
                     let _ = tx.send(Event::Activity(Activity::Command(line)));
@@ -329,7 +336,7 @@ fn run(
                 _ => {}
             }
         }
-        publish_lobby(&engine, alias_ok, now, &mut snapshot, tx);
+        publish_lobby(&engine, identity_ok, now, &mut snapshot, tx);
         if repair_lobby || engine.phase == Phase::Restarting {
             if stop.load(Ordering::SeqCst) {
                 return Ok(());
@@ -343,6 +350,7 @@ fn run(
                 },
             );
             let _ = tx.send(Event::ClientChanged(None));
+            identity.cancel_creation()?;
             game.terminate()?;
             if repair_lobby {
                 engine.retry_incomplete_lobby();
@@ -350,7 +358,7 @@ fn run(
                 engine.client_stopped(now);
             }
             snapshot = None;
-            alias_ok = false;
+            identity_ok = false;
             let _ = tx.send(Event::LobbyCleared);
             if let Phase::Stopped(reason) = &engine.phase {
                 return if reason == "Configured game limit reached" {
@@ -359,15 +367,14 @@ fn run(
                     Err(reason.clone())
                 };
             }
-            let Some(next) = connection::open(&engine.config, name.clone(), tx, stop, &mut repair)?
-            else {
+            let Some(next) = connection::open(&engine.config, tx, stop, &mut repair)? else {
                 return Ok(());
             };
             if next.initialization_required {
                 engine.expect_client_initialization();
             }
             client = next.client;
-            alias = next.alias;
+            identity = next.identity;
             game = next.game;
             let _ = tx.send(Event::ClientChanged(Some(game.pid())));
             visual_state = None;
@@ -378,8 +385,7 @@ fn run(
         }
         for command in commands {
             if command.message == "CreateLobby" {
-                alias.reset();
-                alias_ok = false;
+                identity_ok = false;
                 let number = engine.number();
                 if reserved != Some(number) {
                     if reserve(number, rx, tx, stop, &mut deferred_controls)?
@@ -395,71 +401,24 @@ fn run(
                 if command.message == "CreateLobby" {
                     return Ok(());
                 }
+                identity.cancel_creation()?;
                 return shutdown::close(&engine, &mut client, &mut pending);
+            }
+            if command.message == "CreateLobby" {
+                identity.begin_creation()?;
             }
             client
                 .send(command.message, command.payload)
                 .map_err(|e| e.to_string())?;
         }
-        if let Some(event) = &event
-            && event["messageType"] == "GameLobbySetup"
-            && engine.owned_lobby(now).is_some()
-        {
-            let value = &event["payload"];
-            if engine
-                .owned_lobby(now)
-                .unwrap()
-                .local()
-                .is_some_and(|p| p.is_observer)
-            {
-                if !alias.matches(value) {
-                    status(tx, "Applying host name…");
-                    reported.clear();
-                    let mut observe = |value: &Value| {
-                        for activity in activity.observed_roster(value) {
-                            track_announcement(&activity, &mut announcements);
-                            let _ = tx.send(Event::Activity(activity));
-                        }
-                    };
-                    let verification = if alias_refresh {
-                        alias_refresh = false;
-                        alias.refresh_observed(&mut client, value, stop, &mut observe)?
-                    } else {
-                        alias.ensure_observed(&mut client, value, stop, &mut observe)?
-                    };
-                    match verification {
-                        Verification::Verified {
-                            snapshot,
-                            pending: observed,
-                        }
-                        | Verification::Changed {
-                            snapshot,
-                            pending: observed,
-                        } => {
-                            pending.extend(observed);
-                            pending.push_back(
-                                json!({"messageType":"GameLobbySetup","payload":snapshot}),
-                            );
-                        }
-                        Verification::Interrupted(observed) => {
-                            pending.extend(observed);
-                        }
-                    }
-                    // Replay native events before accepting more controls or publishing state.
-                    continue;
-                }
-                alias_ok = true;
-                game.hide()?;
-            }
-        }
         publish_lobby(
             &engine,
-            alias_ok,
+            identity_ok,
             started.elapsed().as_secs(),
             &mut snapshot,
             tx,
         );
-        if alias_ok
+        if identity_ok
             && matches!(engine.phase, Phase::Lobby | Phase::Countdown(_))
             && let Some(lobby) = engine.owned_lobby(now)
             && let Some(command) = announcements.next(lobby, &engine.config.welcome, now)
@@ -511,14 +470,14 @@ fn track_announcement(event: &Activity, announcements: &mut crate::welcome::Anno
 
 fn publish_lobby(
     engine: &Engine,
-    alias_ready: bool,
+    identity_ready: bool,
     now: u64,
     previous: &mut Option<Snapshot>,
     tx: &Sender<Event>,
 ) {
     let current = engine
         .owned_lobby(now)
-        .filter(|lobby| alias_ready && lobby.local().is_some_and(|p| p.is_observer))
+        .filter(|lobby| identity_ready && lobby.local().is_some_and(|p| p.is_observer))
         .map(|lobby| summarize(lobby, engine.can_start(now), engine.phase == Phase::Lobby));
     if *previous != current {
         let _ = tx.send(match &current {

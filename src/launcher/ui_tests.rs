@@ -106,7 +106,7 @@ fn rendered_menu_opens_selects_and_closes_without_clicking_underneath() {
     let mut harness = Harness::new();
     harness.settle(&mut app);
     harness.frame(&app, None, false, "hosting");
-    let messages = harness.frame(&app, Some(Point::new(620.0, 571.0)), true, "menu-pressed");
+    let messages = harness.frame(&app, Some(Point::new(620.0, 500.0)), true, "menu-pressed");
     assert!(
         messages
             .iter()
@@ -118,7 +118,7 @@ fn rendered_menu_opens_selects_and_closes_without_clicking_underneath() {
     }
     harness.settle(&mut app);
     harness.frame(&app, None, false, "menu-open");
-    let messages = harness.frame(&app, Some(Point::new(620.0, 504.0)), true, "menu-selection");
+    let messages = harness.frame(&app, Some(Point::new(620.0, 421.0)), true, "menu-selection");
     assert!(
         messages
             .iter()

@@ -423,25 +423,6 @@ fn activity_reports_names_without_inventing_departures_when_players_move() {
 }
 
 #[test]
-fn alias_verification_rosters_keep_short_visits_without_replaying_stale_players() {
-    let engine = ready(false);
-    let mut activity = activity::ActivityTracker::default();
-    activity.observe(&engine, 0, true);
-    assert_eq!(
-        activity.observed_roster(&lobby(true)["payload"]),
-        vec![Activity::Joined("Player".into())]
-    );
-    assert!(activity.observe(&engine, 1, false).is_empty());
-    assert_eq!(
-        activity.observed_roster(&lobby(false)["payload"]),
-        vec![Activity::Left("Player".into())]
-    );
-    let mut other = lobby(true);
-    other["payload"]["lobbyName"] = json!("Another game");
-    assert!(activity.observed_roster(&other["payload"]).is_empty());
-}
-
-#[test]
 fn native_joins_wait_for_a_name_and_keep_it_through_transient_empty_updates() {
     let mut engine = ready(false);
     let mut activity = activity::ActivityTracker::default();
@@ -452,12 +433,14 @@ fn native_joins_wait_for_a_name_and_keep_it_through_transient_empty_updates() {
     engine.on_event(&joined, 1);
     assert!(activity.observe(&engine, 1, true).is_empty());
     joined["payload"]["players"][1]["name"] = json!("Alice");
+    engine.on_event(&joined, 1);
     assert_eq!(
-        activity.observed_roster(&joined["payload"]),
+        activity.observe(&engine, 1, true),
         vec![Activity::Joined("Alice".into())]
     );
     joined["payload"]["players"][1]["name"] = json!("");
-    assert!(activity.observed_roster(&joined["payload"]).is_empty());
+    engine.on_event(&joined, 1);
+    assert!(activity.observe(&engine, 1, true).is_empty());
     joined["payload"]["players"][1]["name"] = json!("Alice");
     engine.on_event(&joined, 2);
     assert!(activity.observe(&engine, 2, true).is_empty());

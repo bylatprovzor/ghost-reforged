@@ -29,7 +29,6 @@ impl Participant {
 #[derive(Default)]
 pub(super) struct ActivityTracker {
     lobby: Option<String>,
-    map: String,
     players: Vec<Participant>,
     started: bool,
 }
@@ -40,7 +39,6 @@ impl ActivityTracker {
         if roster_changed && let Some(lobby) = engine.owned_lobby(now) {
             if self.lobby.as_deref() != Some(&lobby.lobby_name) {
                 self.lobby = Some(lobby.lobby_name.clone());
-                self.map = lobby.map_data.map_path.clone();
                 self.players.clear();
                 self.started = false;
                 events.push(Activity::LobbyCreated(lobby.lobby_name.clone()));
@@ -90,19 +88,5 @@ impl ActivityTracker {
         }
         self.players = players;
         events
-    }
-
-    pub fn observed_roster(&mut self, value: &serde_json::Value) -> Vec<Activity> {
-        let Ok(lobby) = serde_json::from_value::<Lobby>(value.clone()) else {
-            return Vec::new();
-        };
-        if !lobby.is_host
-            || lobby.local().is_none()
-            || self.lobby.as_deref() != Some(&lobby.lobby_name)
-            || !crate::protocol::same_map_path(&self.map, &lobby.map_data.map_path)
-        {
-            return Vec::new();
-        }
-        self.roster(&lobby)
     }
 }

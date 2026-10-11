@@ -30,7 +30,7 @@ pub fn field_enabled<'a>(
     enabled: bool,
 ) -> Element<'a, Message> {
     let icon = match kind {
-        Field::Bot | Field::Title => Icon::User,
+        Field::Title => Icon::User,
         Field::Pattern => Icon::Game,
         Field::Number => Icon::Number,
         Field::Players => Icon::Players,

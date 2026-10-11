@@ -1,9 +1,9 @@
 use super::{Event, status};
 use crate::{
-    alias::Alias,
     background,
     config::Config,
     discovery::{self, DiscoveryError},
+    host_identity::HostIdentity,
     protocol::Lobby,
     transport::Client,
 };
@@ -21,20 +21,19 @@ use std::{
 pub(super) struct Connection {
     pub initialization_required: bool,
     pub client: Client,
-    pub alias: Alias,
+    pub identity: HostIdentity,
     pub game: background::Background,
     pub pending: VecDeque<Value>,
 }
 
 pub(super) fn open(
     config: &Config,
-    name: String,
     tx: &Sender<Event>,
     stop: &AtomicBool,
     repair: &mut super::repair::Repair,
 ) -> Result<Option<Connection>, String> {
     loop {
-        let Some(mut connection) = open_once(config, name.clone(), tx, stop)? else {
+        let Some(mut connection) = open_once(config, tx, stop)? else {
             return Ok(None);
         };
         let candidate = connection
@@ -66,7 +65,6 @@ pub(super) fn open(
 
 fn open_once(
     config: &Config,
-    name: String,
     tx: &Sender<Event>,
     stop: &AtomicBool,
 ) -> Result<Option<Connection>, String> {
@@ -136,7 +134,7 @@ fn open_once(
     };
     game.hide()?;
     let mut client = Client::connect(&endpoint).map_err(|e| e.to_string())?;
-    let alias = Alias::open(endpoint.pid, name)?;
+    let identity = HostIdentity::open(endpoint.pid)?;
     client
         .send("SendGameLobbySetup", json!({}))
         .map_err(|e| e.to_string())?;
@@ -186,7 +184,7 @@ fn open_once(
     Ok(Some(Connection {
         initialization_required,
         client,
-        alias,
+        identity,
         game,
         pending,
     }))
