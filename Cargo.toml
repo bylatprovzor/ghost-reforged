@@ -1,0 +1,42 @@
+[package]
+name = "ghost-reforged"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "GHost Reforged — configurable Warcraft III auto host"
+default-run = "ghost-reforged"
+autobins = false
+repository = "https://github.com/shideneyu/ghost-reforged"
+
+[features]
+default = ["launcher"]
+launcher = ["dep:iced", "dep:rfd", "dep:fs2", "dep:tempfile"]
+
+[[bin]]
+name = "ghost-reforged"
+path = "src/launcher/main.rs"
+required-features = ["launcher"]
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+memchr = "2.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+toml = "0.8"
+tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "tokio", "crisp", "svg", "image-without-codecs"], optional = true }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"], optional = true }
+fs2 = { version = "0.4", optional = true }
+tempfile = { version = "3", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_Storage_Xps"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

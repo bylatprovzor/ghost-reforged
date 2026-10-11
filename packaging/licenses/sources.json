@@ -1,0 +1,87 @@
+[
+  {
+    "Name": "clipboard-win",
+    "Repository": "https://github.com/DoumanAsh/clipboard-win",
+    "Sha": "3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342"
+  },
+  {
+    "Name": "hexf-parse",
+    "Repository": "https://github.com/lifthrasiir/hexf",
+    "Sha": "4225763d744183d720f575ae96d04161b4d08ea0"
+  },
+  {
+    "Name": "iced_core",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_debug",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_futures",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_graphics",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_program",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_renderer",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_runtime",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_tiny_skia",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "0ecf60664df7b8ac7d7aef5f7279d5323027f693"
+  },
+  {
+    "Name": "iced_wgpu",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "3997291f318a8bc06fa522f5579836fb3feb94df"
+  },
+  {
+    "Name": "iced_widget",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "54abf81d13fec06d4d9ac754b03ce2c3313e8a1f"
+  },
+  {
+    "Name": "iced_winit",
+    "Repository": "https://github.com/iced-rs/iced",
+    "Sha": "38237dd294da3256c2ac4d3f8288fc73956c91e0"
+  },
+  {
+    "Name": "profiling",
+    "Repository": "https://github.com/aclysma/profiling",
+    "Sha": "8271551172eb6fa4cba47369aedd93790c623df9"
+  },
+  {
+    "Name": "svg_fmt",
+    "Repository": "https://github.com/nical/rust_debug",
+    "Sha": "93f414cd572b5c2781df93dbdc068ed13443d05a"
+  },
+  {
+    "Name": "zune-core",
+    "Repository": null,
+    "Sha": "f8fbb123d5ed04441e8324a555bfcda0cb1bd28f"
+  },
+  {
+    "Name": "zune-jpeg",
+    "Repository": "https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg",
+    "Sha": "fa2c767a01d7d9373911d0bf63e0588553d67e0e"
+  }
+]

@@ -1,0 +1,6 @@
+/target/
+/.audit/
+/dist/
+*.pdb
+profiles.json
+launcher.lock
