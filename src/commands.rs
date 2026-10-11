@@ -279,12 +279,21 @@ impl LobbyCommands {
                 message
             }
             ChatCommand::Players => self.counts(required),
-            ChatCommand::Help => ChatCommand::ALL
-                .into_iter()
-                .filter(|c| settings.enabled(*c))
-                .map(ChatCommand::name)
-                .collect::<Vec<_>>()
-                .join("  "),
+            ChatCommand::Help => format!(
+                "Commands: {}.",
+                ChatCommand::ALL
+                    .into_iter()
+                    .filter(|c| settings.enabled(*c))
+                    .map(|c| match c {
+                        ChatCommand::VoteStart => "?votestart = vote to start",
+                        ChatCommand::VoteCancel => "?votecancel = withdraw your votes",
+                        ChatCommand::VoteKick => "?votekick <name> = vote to kick",
+                        ChatCommand::Players => "?players = player/vote counts",
+                        ChatCommand::Help => "?help = this list",
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
         };
         let send = start || kick.is_some() || self.last_reply.is_none_or(|last| now > last);
         if send {

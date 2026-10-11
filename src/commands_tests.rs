@@ -117,6 +117,51 @@ fn withdrawing_a_start_vote_does_not_start_a_game() {
 }
 
 #[test]
+fn help_explains_enabled_commands_without_changing_votes_with_a_blank_host() {
+    let mut roster = lobby();
+    roster.players[0].name.clear();
+    roster.players[0].is_observer = true;
+    roster.players[0].team = OBSERVER_TEAM;
+    let mut commands = LobbyCommands::default();
+    commands.observe(Some(&roster), 0);
+    let mut settings = CommandSettings::default();
+    commands.handle(&chat("Player1", "?votestart"), &settings, 1);
+    commands.handle(&chat("Player1", "?votekick Player3"), &settings, 2);
+    let votes = commands.votes.clone();
+    let kick_voters = commands.kick.as_ref().unwrap().voters.clone();
+    for now in [3, 4] {
+        let result = commands.handle(&chat("Player2", "?help"), &settings, now);
+        assert!(!result.start && result.kick.is_none());
+        let reply = result.reply.unwrap();
+        assert_eq!(reply.message, "SendGameChatMessage");
+        let text = reply.payload["content"].as_str().unwrap();
+        assert!(text.starts_with("Commands: "));
+        assert!(text.contains("?votestart = vote to start"));
+        assert!(text.contains("?votekick <name> = vote to kick"));
+        assert!(text.len() <= 250);
+        assert_eq!(commands.votes, votes);
+        assert_eq!(commands.kick.as_ref().unwrap().voters, kick_voters);
+    }
+    settings.set(ChatCommand::VoteKick, false);
+    let reply = commands
+        .handle(&chat("Player2", "?help"), &settings, 5)
+        .reply
+        .unwrap();
+    assert!(
+        !reply.payload["content"]
+            .as_str()
+            .unwrap()
+            .contains("?votekick")
+    );
+    assert!(
+        commands
+            .handle(&chat("", "?help"), &settings, 6)
+            .reply
+            .is_none()
+    );
+}
+
+#[test]
 fn kick_needs_distinct_votes_and_a_fresh_matching_target() {
     let mut commands = LobbyCommands::default();
     let settings = CommandSettings::default();
