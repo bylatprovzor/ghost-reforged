@@ -30,7 +30,7 @@ impl Repair {
         if self.protected
             || !matches!(
                 phase,
-                Phase::Creating(_) | Phase::Lobby | Phase::Countdown(_)
+                Phase::Creating(_) | Phase::Lobby | Phase::Countdown(_) | Phase::Recovering(_)
             )
         {
             self.candidate = None;

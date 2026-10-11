@@ -8,6 +8,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{net::TcpListener, path::PathBuf, thread, time::Duration};
 
+mod automatic_recovery;
 mod countdown;
 mod lifecycle;
 mod recovery;
@@ -298,8 +299,8 @@ fn unconfirmed_empty_native_placeholder_is_not_an_invisible_host() {
     );
     assert!(engine.on_event(&lobby(vec![]), 1).is_empty());
     assert_eq!(engine.phase, Phase::Creating(0));
-    assert!(engine.tick(31).is_empty());
-    assert!(matches!(engine.phase, Phase::Stopped(_)));
+    assert_eq!(engine.tick(31)[0].message, "SendGameLobbySetup");
+    assert!(matches!(engine.phase, Phase::Recovering(_)));
 }
 
 #[test]

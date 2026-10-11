@@ -64,11 +64,12 @@ fn native_rejection_with_unchanged_roster_does_not_spin() {
         2,
     );
     assert_eq!(engine.phase, Phase::Lobby);
-    for now in 3..10 {
+    for now in 3..7 {
         assert!(engine.on_event(&populated(), now).is_empty());
         assert!(engine.tick(now).is_empty());
     }
-    assert_eq!(engine.start_now(9)[0].message, "LobbyStart");
+    assert!(engine.on_event(&populated(), 7).is_empty());
+    assert_eq!(engine.tick(7)[0].message, "LobbyStart");
 }
 
 #[test]

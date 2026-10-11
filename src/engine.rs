@@ -4,6 +4,8 @@ use crate::{
     protocol::{self, Command, Lobby, OBSERVER_TEAM},
 };
 use serde_json::{Value, json};
+mod lifecycle;
+mod recovery;
 mod start;
 use start::StartRoster;
 
@@ -22,6 +24,7 @@ pub enum Phase {
     Releasing(u64),
     Leaving(u64),
     Cooldown(u64),
+    Recovering(u64),
     Stopped(String),
 }
 
@@ -43,6 +46,9 @@ pub struct Engine {
     menu_required: bool,
     initialization_required: bool,
     cancelled_roster: Option<String>,
+    recovery_cancel: Option<u64>,
+    retry_start_after: u64,
+    notice: Option<String>,
 }
 
 impl Engine {
@@ -66,6 +72,9 @@ impl Engine {
             menu_required: false,
             initialization_required: false,
             cancelled_roster: None,
+            recovery_cancel: None,
+            retry_start_after: 0,
+            notice: None,
         }
     }
 
@@ -76,7 +85,11 @@ impl Engine {
     pub(crate) fn shutdown_identity(&self) -> Option<(String, String)> {
         matches!(
             self.phase,
-            Phase::Creating(_) | Phase::Lobby | Phase::Countdown(_) | Phase::Starting(_)
+            Phase::Creating(_)
+                | Phase::Lobby
+                | Phase::Countdown(_)
+                | Phase::Starting(_)
+                | Phase::Recovering(_)
         )
         .then(|| {
             (
@@ -115,6 +128,9 @@ impl Engine {
     pub fn on_event(&mut self, event: &Value, now: u64) -> Vec<Command> {
         if matches!(self.phase, Phase::Stopped(_)) {
             return Vec::new();
+        }
+        if matches!(self.phase, Phase::Recovering(_)) {
+            return self.reconcile(event, now);
         }
         let kind = event["messageType"].as_str().unwrap_or("");
         let payload = &event["payload"];
@@ -260,6 +276,11 @@ impl Engine {
                     return Vec::new();
                 }
                 if self.owned && matches_name && matches_map && lobby.is_host {
+                    if self.latest.as_ref().is_some_and(|(previous, _)| {
+                        previous.start_signature() != lobby.start_signature()
+                    }) {
+                        self.retry_start_after = now;
+                    }
                     if lobby.empty() {
                         self.empty_since.get_or_insert(now);
                     } else {
@@ -283,10 +304,18 @@ impl Engine {
                     let cancelled = self.start.as_ref().is_some_and(|s| s.cancel_requested);
                     self.start_confirmed |= self.countdown_locked && !cancelled;
                     if !self.countdown_locked || cancelled {
-                        self.cancelled_roster = self
-                            .latest
-                            .as_ref()
-                            .map(|(lobby, _)| lobby.start_signature());
+                        self.cancelled_roster = if cancelled {
+                            self.latest
+                                .as_ref()
+                                .map(|(lobby, _)| lobby.start_signature())
+                        } else {
+                            None
+                        };
+                        self.retry_start_after = if cancelled {
+                            now
+                        } else {
+                            now.saturating_add(5)
+                        };
                         self.start = None;
                         self.countdown_locked = false;
                         self.phase = Phase::Lobby;
@@ -339,15 +368,14 @@ impl Engine {
                 }
                 _ => {}
             },
-            "MultiplayerGameLeave" if self.owned => {
-                if matches!(self.phase, Phase::Leaving(_)) {
-                    self.release(now);
-                } else if !matches!(
-                    self.phase,
-                    Phase::InGame | Phase::Releasing(_) | Phase::Starting(_)
-                ) {
-                    self.stop("Lobby was left outside the controller; automatic hosting stopped");
-                }
+            "MultiplayerGameLeave"
+                if self.owned
+                    && !matches!(
+                        self.phase,
+                        Phase::InGame | Phase::Releasing(_) | Phase::Starting(_)
+                    ) =>
+            {
+                self.release(now);
             }
             _ => {}
         }
@@ -418,58 +446,6 @@ impl Engine {
         ))
     }
 
-    fn finish_game(&mut self, now: u64) {
-        self.completed = self.completed.saturating_add(1);
-        if self.config.max_games > 0 && self.completed >= self.config.max_games {
-            self.stop("Configured game limit reached");
-        } else {
-            self.map_index = (self.map_index + 1) % self.config.maps.len();
-            self.release(now);
-        }
-    }
-
-    pub fn client_stopped(&mut self, now: u64) {
-        if self.phase == Phase::Restarting {
-            self.finish_game(now);
-        }
-    }
-
-    pub(crate) fn retry_incomplete_lobby(&mut self) {
-        // A failed creation does not consume a completed game or a second reservation.
-        let config = Config {
-            first_number: self.number,
-            ..self.config.clone()
-        };
-        let completed = self.completed;
-        let map_index = self.map_index;
-        *self = Self::new(config);
-        self.completed = completed;
-        self.map_index = map_index;
-    }
-
-    pub fn expect_client_initialization(&mut self) {
-        self.initialization_required = true;
-        self.provider_ready = false;
-    }
-
-    fn release(&mut self, now: u64) {
-        self.provider_ready = false;
-        self.start = None;
-        self.countdown_locked = false;
-        self.start_confirmed = false;
-        self.cancelled_roster = None;
-        let Some(next) = self.number.checked_add(1) else {
-            self.stop("Lobby number exhausted");
-            return;
-        };
-        self.number = next;
-        self.owned = false;
-        self.latest = None;
-        self.empty_since = None;
-        self.move_sent = None;
-        self.phase = Phase::Cooldown(now + self.config.rehost_delay_seconds);
-    }
-
     pub fn tick(&mut self, now: u64) -> Vec<Command> {
         if let Phase::Initializing(sent) = self.phase
             && now.saturating_sub(sent) >= self.config.command_timeout_seconds
@@ -490,8 +466,12 @@ impl Engine {
             | Phase::Leaving(sent)
                 if now.saturating_sub(sent) >= self.config.command_timeout_seconds =>
             {
-                self.stop("Command was not acknowledged; inspect the client before restarting");
-                return Vec::new();
+                self.notice = Some(format!(
+                    "Native command timed out in {:?} after {} s; reconciling the lobby.",
+                    self.phase, self.config.command_timeout_seconds
+                ));
+                self.recover(now);
+                return vec![Command::empty("SendGameLobbySetup")];
             }
             Phase::Cooldown(until) if now >= until => self.phase = Phase::AwaitMenu,
             _ => {}
@@ -508,8 +488,14 @@ impl Engine {
         };
         if now.saturating_sub(*seen) >= self.config.stale_after_seconds {
             if matches!(self.phase, Phase::Starting(_)) {
-                self.stop("Lobby state went stale during start; cancellation requested");
-                return vec![Command::empty("LobbyCancel")];
+                // A silent UI during the native countdown/loading transition
+                // is not evidence that a player left. The command deadline
+                // above handles a genuinely stalled start.
+                return Vec::new();
+            }
+            if now.saturating_sub(*seen) >= self.config.command_timeout_seconds {
+                self.recover(now);
+                return vec![Command::empty("SendGameLobbySetup")];
             }
             self.phase = Phase::Lobby;
             return Vec::new();
@@ -550,6 +536,15 @@ impl Engine {
                 });
         if !enough {
             if matches!(self.phase, Phase::Starting(_)) {
+                self.notice = Some(format!(
+                    "Countdown cancelled: {}.",
+                    self.start
+                        .as_ref()
+                        .and_then(|start| start.change(lobby))
+                        .unwrap_or_else(
+                            || "the configured start rule is no longer satisfied".into()
+                        )
+                ));
                 if let Some(start) = &mut self.start {
                     start.cancel_requested = true;
                 }
@@ -566,6 +561,7 @@ impl Engine {
                 return vec![Command::empty("LeaveGame")];
             }
         } else if self.config.auto_start
+            && now >= self.retry_start_after
             && self.cancelled_roster.as_ref() != Some(&lobby.start_signature())
         {
             match self.phase {
@@ -584,7 +580,11 @@ impl Engine {
     pub fn wants_snapshot(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Creating(_) | Phase::Lobby | Phase::Countdown(_) | Phase::Starting(_)
+            Phase::Creating(_)
+                | Phase::Lobby
+                | Phase::Countdown(_)
+                | Phase::Starting(_)
+                | Phase::Recovering(_)
         )
     }
 

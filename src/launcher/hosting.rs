@@ -34,6 +34,8 @@ impl App {
             ..Config::default()
         };
         self.worker = Some(Worker::start(config)?);
+        self.hosting_requested = true;
+        self.last_reserved = None;
         self.lobby = None;
         self.hosting_status = "Connecting…".into();
         self.log("Auto Host started.");
@@ -43,6 +45,11 @@ impl App {
     pub(super) fn reserve_number(&mut self, number: u32) -> Result<(), String> {
         let next = number.checked_add(1).ok_or("Lobby number exhausted.")?;
         let mut updated = self.profiles.clone();
+        // An acknowledgement can be lost after the atomic save succeeded.
+        if self.last_reserved == Some(number) && updated.items[updated.selected].next_number == next
+        {
+            return Ok(());
+        }
         if updated.items[updated.selected].next_number != number {
             return Err("The lobby counter changed unexpectedly.".into());
         }
@@ -55,6 +62,7 @@ impl App {
         self.profiles = updated;
         self.form.number = next.to_string();
         self.form.profile.next_number = next;
+        self.last_reserved = Some(number);
         Ok(())
     }
 
@@ -94,6 +102,7 @@ impl App {
                     }
                 }
                 Event::Finished(result) => {
+                    self.hosting_requested = false;
                     self.preview.target(None);
                     self.worker = None;
                     self.lobby = None;

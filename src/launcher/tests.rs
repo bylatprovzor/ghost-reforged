@@ -18,14 +18,16 @@ fn started_games_are_named_highlighted_activity_entries() {
 }
 
 #[test]
-fn reservation_is_durable_before_creation_and_cannot_be_reused() {
+fn reservation_ack_is_idempotent_within_a_worker_but_cannot_be_reused_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path(), None);
     app.reserve_number(1).unwrap();
-    assert!(app.reserve_number(1).is_err());
-    drop(app);
-    let app = App::new(dir.path(), None);
+    app.reserve_number(1).unwrap();
     assert_eq!(app.form.number, "2");
+    drop(app);
+    let mut app = App::new(dir.path(), None);
+    assert_eq!(app.form.number, "2");
+    assert!(app.reserve_number(1).is_err());
 }
 
 #[test]

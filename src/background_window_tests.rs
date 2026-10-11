@@ -233,6 +233,37 @@ fn successful_launcher_handoff_restores_input_but_keeps_the_window_hidden() {
 }
 
 #[test]
+fn launcher_remains_protected_when_it_shows_or_recreates_windows_after_connection() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let first = fixture.window();
+    fixture.command("launcher");
+    let guard = Guard::start(fixture.child.id()).unwrap();
+    let mut launch = crate::background_launcher::Launch::with_test_guard(fixture.child.id(), guard);
+    launch.complete();
+    fixture.command("show");
+    eventually(|| unsafe { IsWindowVisible(first) } == 0);
+    let second = fixture.command("replace");
+    fixture.command("launcher");
+    fixture.command("show");
+    eventually(|| unsafe { IsWindowVisible(second) } == 0);
+    drop(launch);
+    eventually(|| unsafe { GetPropW(second, MARK.as_ptr()).is_null() });
+    assert_eq!(unsafe { IsWindowVisible(second) }, 0);
+    assert_ne!(unsafe { IsWindowEnabled(second) }, 0);
+}
+
+#[test]
+fn a_dead_process_releases_its_persistent_window_watcher() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let guard = Guard::start(fixture.child.id()).unwrap();
+    fixture.child.kill().unwrap();
+    fixture.child.wait().unwrap();
+    eventually(|| guard.check().is_err());
+}
+
+#[test]
 fn cancelled_launch_restores_a_window_created_hidden_then_shown() {
     let _test = TEST_PRESENTATION.lock().unwrap();
     let mut fixture = Fixture::start();

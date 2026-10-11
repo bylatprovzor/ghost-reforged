@@ -33,6 +33,10 @@ pub enum Field {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    UpdateChecked(Result<Option<super::updates::Release>, String>),
+    InstallUpdate,
+    DismissUpdate,
+    UpdateDownloaded(Result<super::updates::Download, String>),
     Tray(super::tray::Event),
     QuitRequested(iced::window::Id),
     Window(WindowAction),
@@ -129,6 +133,10 @@ pub struct LogEntry {
 }
 
 pub struct App {
+    pub updates: super::updates::State,
+    pub(super) data_directory: PathBuf,
+    pub(super) last_reserved: Option<u32>,
+    pub(super) hosting_requested: bool,
     pub(super) audio: ghost_reforged::background::Silence,
     pub hidden: bool,
     pub tray_available: bool,
@@ -168,6 +176,10 @@ impl App {
             form.profile.map = Some(map);
         }
         let mut app = Self {
+            updates: Default::default(),
+            data_directory: directory.to_owned(),
+            last_reserved: None,
+            hosting_requested: false,
             audio: ghost_reforged::background::Silence::default(),
             hidden: false,
             tray_available: false,
@@ -202,6 +214,7 @@ impl App {
 
     pub(super) fn log_line(&mut self, line: &str, highlight: bool) {
         let seconds = self.started.elapsed().as_secs();
+        super::journal::append(&self.data_directory, seconds, line);
         self.logs.push_front(LogEntry {
             time: format!("{:02}:{:02}", seconds / 60, seconds % 60),
             message: line.into(),
@@ -237,13 +250,16 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if let Some(task) = self.update_message(&message) {
+            return task;
+        }
         if let Message::Tray(event) = message {
             return self.tray_event(event);
         }
         if let Message::CloseRequested(id) = message {
             return self.hide_to_tray(id);
         }
-        if self.motion.modal_visible()
+        if (self.motion.modal_visible() || self.updates.available.is_some())
             && !matches!(
                 message,
                 Message::ClosePreview
@@ -257,6 +273,7 @@ impl App {
                     | Message::ProcessObserved(_)
                     | Message::CloseRequested(_)
                     | Message::QuitRequested(_)
+                    | Message::Stop
             )
         {
             return Task::none();
@@ -307,6 +324,8 @@ impl App {
                 self.motion.modal.target(0.0, Instant::now());
             }
             Message::QuitRequested(id) => {
+                self.hosting_requested = false;
+                self.updates.resume = false;
                 if let Some(worker) = &self.worker {
                     self.closing = Some(id);
                     worker.send(Control::Stop);
@@ -320,6 +339,8 @@ impl App {
                 self.notify(result, "");
             }
             Message::Stop => {
+                self.hosting_requested = false;
+                self.updates.resume = false;
                 if let Some(worker) = &self.worker {
                     worker.send(Control::Stop);
                 }
@@ -345,6 +366,9 @@ impl App {
                 self.poll_host();
                 if !self.hidden {
                     self.preview.poll();
+                }
+                if self.worker.is_none() && self.updates.ready.is_some() {
+                    return self.install_ready();
                 }
                 if self.worker.is_none()
                     && let Some(id) = self.closing.take()

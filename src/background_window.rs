@@ -164,7 +164,16 @@ impl Guard {
                         break;
                     }
                     if message.message == WM_TIMER {
-                        with_state(|state| state.scan());
+                        let mut alive = false;
+                        with_state(|state| {
+                            alive = state.alive();
+                            if alive {
+                                state.scan();
+                            }
+                        });
+                        if !alive {
+                            break;
+                        }
                     } else {
                         unsafe {
                             DispatchMessageW(&message);

@@ -21,8 +21,6 @@ use std::{
 pub(super) struct Connection {
     pub initialization_required: bool,
     pub client: Client,
-    pub identity: HostIdentity,
-    pub game: background::Background,
     pub pending: VecDeque<Value>,
 }
 
@@ -31,9 +29,10 @@ pub(super) fn open(
     tx: &Sender<Event>,
     stop: &AtomicBool,
     repair: &mut super::repair::Repair,
+    resources: &mut super::supervision::Resources,
 ) -> Result<Option<Connection>, String> {
     loop {
-        let opened = open_once(config, tx, stop);
+        let opened = open_once(config, tx, stop, resources);
         if stop.load(Ordering::SeqCst) {
             return Ok(None);
         }
@@ -60,7 +59,12 @@ pub(super) fn open(
                 return Ok(None);
             }
             status(tx, "Incomplete lobby detected. Restarting Warcraft III…");
-            connection.game.terminate()?;
+            resources
+                .game
+                .as_mut()
+                .ok_or("Client is unavailable")?
+                .terminate()?;
+            resources.clear_dead();
             continue;
         }
         return Ok(Some(connection));
@@ -71,20 +75,23 @@ fn open_once(
     config: &Config,
     tx: &Sender<Event>,
     stop: &AtomicBool,
+    resources: &mut super::supervision::Resources,
 ) -> Result<Option<Connection>, String> {
     status(tx, "Connecting to Warcraft III…");
-    let mut background = None;
-    let mut launcher = background::LauncherLaunch::default();
+    resources.clear_dead();
+    let background = &mut resources.game;
+    let launcher = &mut resources.launcher;
     let discovery = discovery::discover();
     let initialization_required = needs_initialization(&discovery);
     let mut launch_requested = false;
     let deadline = Instant::now() + Duration::from_secs(60);
+    launcher.watch(stop, deadline)?;
     let endpoint = match discovery {
         Ok(endpoint) => endpoint,
         Err(DiscoveryError::NotRunning | DiscoveryError::NoEndpoint) => {
-            if matches!(discovery, Err(DiscoveryError::NotRunning)) {
+            if matches!(discovery, Err(DiscoveryError::NotRunning)) && background.is_none() {
                 status(tx, "Starting Warcraft III through Battle.net…");
-                background = background::launch(&mut launcher, stop, deadline)?;
+                *background = background::launch(launcher, stop, deadline)?;
                 launch_requested = true;
             }
             loop {
@@ -95,7 +102,7 @@ fn open_once(
                 if background.is_none()
                     && let Ok(pid) = discovery::process_id()
                 {
-                    background = Some(background::Background::attach(pid)?);
+                    *background = Some(background::Background::attach(pid)?);
                 }
                 if let Some(game) = background.as_mut() {
                     game.hide_until(stop, deadline)?;
@@ -104,11 +111,16 @@ fn open_once(
                     return Ok(None);
                 }
                 let discovered = discovery::discover();
-                if request_launch(&discovered, &mut launch_requested) {
+                if background.as_ref().is_some_and(|game| !game.running()) {
+                    resources.identity = None;
+                    *background = None;
+                    resources.generation = resources.generation.wrapping_add(1);
+                }
+                if background.is_none() && request_launch(&discovered, &mut launch_requested) {
                     // An endpoint-less client can exit between discovery attempts.
                     drop(background.take());
                     status(tx, "Starting Warcraft III through Battle.net…");
-                    background = background::launch(&mut launcher, stop, deadline)?;
+                    *background = background::launch(launcher, stop, deadline)?;
                 }
                 launcher.retry_if_needed(
                     background.is_none() && matches!(discovered, Err(DiscoveryError::NotRunning)),
@@ -130,7 +142,7 @@ fn open_once(
                     Err(error) => return Err(error.to_string()),
                 }
                 if Instant::now() >= deadline {
-                    return Err("Warcraft III did not become available. Open it through Battle.net, then click Host.".into());
+                    return Err("Warcraft III did not become available yet.".into());
                 }
                 thread::sleep(Duration::from_millis(500));
             }
@@ -140,13 +152,21 @@ fn open_once(
     if endpoint.version.as_deref() != Some(config.expected_version.as_str()) {
         return Err("This Warcraft III build has not been verified yet.".into());
     }
-    let mut game = match background {
-        Some(game) => game,
-        None => background::Background::attach(endpoint.pid)?,
-    };
+    if background
+        .as_ref()
+        .is_some_and(|game| game.pid() != endpoint.pid)
+    {
+        return Err("Another Warcraft III client appeared.".into());
+    }
+    if background.is_none() {
+        *background = Some(background::Background::attach(endpoint.pid)?);
+    }
+    let game = background.as_mut().ok_or("Client is unavailable")?;
     game.hide_until(stop, deadline)?;
     let mut client = Client::connect(&endpoint).map_err(|e| e.to_string())?;
-    let identity = HostIdentity::open(endpoint.pid)?;
+    if resources.identity.is_none() {
+        resources.identity = Some(HostIdentity::open(endpoint.pid)?);
+    }
     client
         .send("SendGameLobbySetup", json!({}))
         .map_err(|e| e.to_string())?;
@@ -196,8 +216,6 @@ fn open_once(
     Ok(Some(Connection {
         initialization_required,
         client,
-        identity,
-        game,
         pending,
     }))
 }

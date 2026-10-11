@@ -12,6 +12,7 @@ mod effects;
 mod frame_art;
 mod hosting;
 mod hosting_view;
+mod journal;
 mod map_name;
 mod maps;
 mod motion;
@@ -28,6 +29,8 @@ mod tests;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod update_ui;
+mod updates;
 mod view;
 mod widgets;
 
@@ -60,9 +63,13 @@ fn main() -> iced::Result {
     iced::application(
         move || {
             let mut state = app::App::new(&directory, args.map.clone());
-            let mut task = state.update(app::Message::PollProcess);
+            let task = Task::batch([
+                state.update(app::Message::PollProcess),
+                Task::perform(updates::check(), app::Message::UpdateChecked),
+            ]);
             if args.host {
-                task = Task::batch([task, Task::done(app::Message::Host)]);
+                let result = state.start_hosting();
+                state.notify(result, "");
             }
             (state, task)
         },

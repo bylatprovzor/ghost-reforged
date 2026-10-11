@@ -179,6 +179,9 @@ mod native {
             self.audio = None;
             Ok(())
         }
+        pub(crate) fn running(&self) -> bool {
+            unsafe { WaitForSingleObject(self.process, 0) != 0 }
+        }
         pub fn pid(&self) -> u32 {
             self.pid
         }
@@ -199,6 +202,13 @@ mod native {
         ) -> Result<(), String> {
             if self.audio.is_none() {
                 self.audio = Some(crate::background_audio::Guard::start(self.pid)?);
+            }
+            if self
+                .guard
+                .as_ref()
+                .is_some_and(|guard| guard.check().is_err())
+            {
+                self.guard = None;
             }
             if let Some(guard) = &self.guard {
                 guard.check()?;
@@ -277,6 +287,9 @@ impl Background {
     pub fn attach(_: u32) -> Result<Self, String> {
         Ok(Self)
     }
+    pub(crate) fn running(&self) -> bool {
+        false
+    }
     pub fn pid(&self) -> u32 {
         0
     }
@@ -327,4 +340,11 @@ impl LauncherLaunch {
         Ok(())
     }
     pub(crate) fn complete(&mut self) {}
+    pub(crate) fn watch(
+        &mut self,
+        stop: &std::sync::atomic::AtomicBool,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        self.poll(stop, deadline)
+    }
 }

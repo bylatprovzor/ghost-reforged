@@ -150,10 +150,22 @@ pub fn view(app: &App) -> Element<'_, Message> {
             background,
             bg::Coverage::for_page(app.page, app.motion.page.value(app.motion.now))
         ),
-        foreground
+        foreground,
+        container(
+            text(concat!("v", env!("CARGO_PKG_VERSION")))
+                .size(12)
+                .color(Color::WHITE)
+        )
+        .align_right(Fill)
+        .align_bottom(Fill)
+        .padding(iced::Padding {
+            right: 14.0,
+            bottom: 5.0,
+            ..Default::default()
+        })
     ]
     .into();
-    if app.motion.modal_visible() {
+    let composed = if app.motion.modal_visible() {
         stack![
             super::preview_view::modal(app, base),
             container(row![space().width(Fill), super::chrome::controls()]).padding(
@@ -166,7 +178,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .into()
     } else {
         base
-    }
+    };
+    super::update_ui::modal(app, composed)
 }
 fn profiles(app: &App) -> Element<'_, Message> {
     let mut items = column![].spacing(16);

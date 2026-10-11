@@ -99,6 +99,45 @@ impl Harness {
 }
 
 #[test]
+fn update_modal_is_compact_blocks_underlying_controls_and_can_be_deferred() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(directory.path(), None);
+    let release = serde_json::json!([{"tag_name":"v9.0.0","draft":false,"prerelease":true,"assets":[{
+        "name":"GHost-Reforged-Setup-x64.exe","state":"uploaded","size":123,
+        "browser_download_url":"https://github.com/shideneyu/ghost-reforged/releases/download/v9.0.0/GHost-Reforged-Setup-x64.exe",
+        "digest":format!("sha256:{}", "a".repeat(64))
+    }]}]);
+    app.updates.available =
+        super::updates::select(&serde_json::to_vec(&release).unwrap(), "0.2.3").unwrap();
+    let mut harness = Harness::new();
+    harness.settle(&mut app);
+    harness.frame(&app, None, false, "update-modal");
+    let covered = harness.frame(
+        &app,
+        Some(Point::new(100.0, 280.0)),
+        true,
+        "update-covered-controls",
+    );
+    assert!(!covered.iter().any(|m| matches!(m, Message::Page(_))));
+    let dismissed = harness.frame(
+        &app,
+        Some(Point::new(640.0, 485.0)),
+        true,
+        "update-later-click",
+    );
+    assert!(
+        dismissed
+            .iter()
+            .any(|m| matches!(m, Message::DismissUpdate))
+    );
+    for message in dismissed {
+        let _ = app.update(message);
+    }
+    harness.frame(&app, None, false, "update-dismissed-version");
+    assert!(app.updates.available.is_none());
+}
+
+#[test]
 fn rendered_menu_opens_selects_and_closes_without_clicking_underneath() {
     let directory = tempfile::tempdir().unwrap();
     let mut app = App::new(directory.path(), Some("SurvivalChaosReborn.w3x".into()));

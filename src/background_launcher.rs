@@ -17,9 +17,17 @@ pub(crate) struct Launch {
     path: Option<PathBuf>,
     guards: HashMap<u32, Guard>,
     retry: Retry,
+    polled: Option<Instant>,
 }
 
 impl Launch {
+    #[cfg(test)]
+    pub(crate) fn with_test_guard(pid: u32, guard: Guard) -> Self {
+        Self {
+            guards: HashMap::from([(pid, guard)]),
+            ..Default::default()
+        }
+    }
     pub(crate) fn prepare(
         &mut self,
         path: &Path,
@@ -31,9 +39,17 @@ impl Launch {
     }
 
     pub(crate) fn poll(&mut self, stop: &AtomicBool, deadline: Instant) -> Result<(), String> {
+        if self
+            .polled
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return Ok(());
+        }
+        self.polled = Some(Instant::now());
         let Some(expected) = &self.path else {
             return Ok(());
         };
+        self.guards.retain(|_, guard| guard.check().is_ok());
         for pid in processes(expected)? {
             if let std::collections::hash_map::Entry::Vacant(entry) = self.guards.entry(pid) {
                 entry.insert(
@@ -43,6 +59,15 @@ impl Launch {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn watch(&mut self, stop: &AtomicBool, deadline: Instant) -> Result<(), String> {
+        if self.path.is_none()
+            && let Some(root) = std::env::var_os("ProgramFiles(x86)")
+        {
+            self.path = Some(PathBuf::from(root).join("Battle.net/Battle.net.exe"));
+        }
+        self.poll(stop, deadline)
     }
 
     pub(crate) fn requested(&mut self) {
@@ -75,8 +100,7 @@ impl Launch {
         for guard in self.guards.values() {
             guard.keep_hidden();
         }
-        self.guards.clear();
-        self.path = None;
+        // Keep hooks alive for delayed launcher notifications and recreated windows.
     }
 }
 
@@ -89,6 +113,7 @@ struct Retry {
 impl Retry {
     fn requested(&mut self, now: Instant) {
         self.next = Some(now + Duration::from_secs(10));
+        self.game_seen = false;
     }
 
     fn due(&mut self, game_absent: bool, now: Instant) -> bool {
@@ -152,5 +177,7 @@ mod tests {
         assert!(!retry.due(true, now + Duration::from_secs(11)));
         assert!(!retry.due(false, now + Duration::from_secs(12)));
         assert!(!retry.due(true, now + Duration::from_secs(30))); // Do not relaunch a crashed client.
+        retry.requested(now + Duration::from_secs(31)); // A new supervised launch.
+        assert!(retry.due(true, now + Duration::from_secs(41)));
     }
 }

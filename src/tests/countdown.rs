@@ -146,3 +146,18 @@ fn resolving_a_profile_during_countdown_does_not_look_like_a_departure() {
     setup["payload"]["players"][4]["id"] = json!(99);
     assert_eq!(engine.on_event(&setup, 3)[0].message, "LobbyCancel");
 }
+
+#[test]
+fn a_full_lobby_is_not_cancelled_when_native_rosters_pause_at_the_end_of_countdown() {
+    let (mut engine, _) = ready_start(false, true);
+    engine.on_event(&countdown(true, true), 4);
+    // Reproduce the old stale-roster branch while the full game transitions.
+    assert!(engine.tick(9).is_empty());
+    assert_eq!(engine.phase, Phase::Starting(1));
+    assert!(engine.on_event(&countdown(false, false), 10).is_empty());
+    engine.on_event(
+        &event("SetGlueScreen", json!({"screen":"LOADING_SCREEN"})),
+        11,
+    );
+    assert_eq!(engine.phase, Phase::InGame);
+}

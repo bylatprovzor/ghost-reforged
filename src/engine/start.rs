@@ -38,8 +38,12 @@ impl StartRoster {
     }
 
     pub fn intact(&self, lobby: &Lobby) -> bool {
-        self.players.iter().all(|old| {
-            lobby.players.iter().any(|p| {
+        self.changed(lobby).is_none()
+    }
+
+    fn changed(&self, lobby: &Lobby) -> Option<&Participant> {
+        self.players.iter().find(|old| {
+            !lobby.players.iter().any(|p| {
                 playing(p)
                     && p.slot == old.slot
                     && p.slot_type == old.kind
@@ -51,9 +55,31 @@ impl StartRoster {
             })
         })
     }
+
+    pub fn change(&self, lobby: &Lobby) -> Option<String> {
+        let old = self.changed(lobby)?;
+        let current = lobby.players.iter().find(|p| p.slot == old.slot);
+        Some(match current {
+            Some(p) => format!(
+                "playing slot {} changed (status {}, type {}, team {}, identity changed: {})",
+                old.slot + 1,
+                p.slot_status,
+                p.slot_type,
+                p.team,
+                p.id.filter(|id| *id >= 0) != old.id || p.name != old.name
+            ),
+            None => format!(
+                "playing slot {} disappeared from the native roster",
+                old.slot + 1
+            ),
+        })
+    }
 }
 
 impl Engine {
+    pub(crate) fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
+    }
     pub(super) fn begin_start(&mut self, now: u64, manual: bool) {
         self.start = self
             .latest
