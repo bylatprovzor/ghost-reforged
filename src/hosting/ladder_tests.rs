@@ -70,6 +70,10 @@ fn apply(payload: &mut Value, commands: Vec<Command>, announcements: &mut Vec<St
 }
 
 fn prepared() -> (Seed, Engine, Value, Vec<String>, u64) {
+    prepared_version(false)
+}
+
+fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
     let (mut engine, mut payload) = fixture();
     let mut seed = Seed::default();
     let (tx, rx) = mpsc::channel();
@@ -78,13 +82,22 @@ fn prepared() -> (Seed, Engine, Value, Vec<String>, u64) {
         key: roster_key(&lobby).unwrap(),
         rx,
     });
-    tx.send(Ok(std::array::from_fn(|i| Profile {
+    let profiles = std::array::from_fn(|i| Profile {
         slot: i as u8,
         battletag: format!("Player{i}#1234"),
         wins: 258,
         losses: 42,
         rank: Some(3),
-    })))
+    });
+    tx.send(if session {
+        Packet::encode_session(&profiles, "0123456789abcde").map(|packet| ladder::Prepared {
+            profiles,
+            packet,
+            expires_at: Some(4102444800),
+        })
+    } else {
+        ladder::Prepared::preview(profiles)
+    })
     .unwrap();
     let mut messages = Vec::new();
     for now in 1..250 {
@@ -107,6 +120,27 @@ fn seeding_survives_row_reordering_and_announces_every_profile_before_start() {
     assert!(seed.ready(&serde_json::from_value(payload).unwrap()));
     assert_eq!(messages[0], "Player0#1234: Wins: 258, Loss: 42, Rank: #3");
     assert_eq!(engine.start_now(now)[0].message, "LobbyStart");
+}
+
+#[test]
+fn result_ticket_uses_the_new_marker_and_gates_start_until_confirmed() {
+    let (seed, mut engine, payload, _, now) = prepared_version(true);
+    assert_eq!(seed.packet.as_ref().unwrap().handicaps[1], 84);
+    assert!(seed.ready(&serde_json::from_value(payload).unwrap()));
+    assert_eq!(engine.start_now(now)[0].message, "LobbyStart");
+}
+
+#[test]
+fn an_expired_session_clears_the_marker_before_registering_again() {
+    let (mut seed, mut engine, payload, _, now) = prepared_version(true);
+    seed.expires_at = Some(0);
+    receive(&mut seed, &mut engine, &payload, now + 1);
+    assert!(!engine.can_start(now + 1));
+    let commands = seed.advance(&engine, now + 1, true, true);
+    assert!(seed.stage == Stage::Fetch);
+    assert!(seed.packet.is_none());
+    assert_eq!(commands[0].message, "SetHandicap");
+    assert_eq!(commands[0].payload["handicap"], 100);
 }
 
 #[test]

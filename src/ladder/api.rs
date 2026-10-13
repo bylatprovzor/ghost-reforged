@@ -30,7 +30,7 @@ pub fn fetch(tags: &[String; 4]) -> Result<[Profile; 4], Error> {
     validate(&body, tags)
 }
 
-fn validate(body: &str, tags: &[String; 4]) -> Result<[Profile; 4], Error> {
+pub(super) fn validate(body: &str, tags: &[String; 4]) -> Result<[Profile; 4], Error> {
     let data: Snapshot = serde_json::from_str(body).map_err(|_| Error::InvalidRoster)?;
     if data.version != 1 || data.minimum_games != 3 || data.players.len() != 4 {
         return Err(Error::InvalidRoster);

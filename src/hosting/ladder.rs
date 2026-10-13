@@ -24,7 +24,7 @@ enum Stage {
 
 struct Job {
     key: String,
-    rx: Receiver<Result<[Profile; 4], ladder::Error>>,
+    rx: Receiver<Result<ladder::Prepared, ladder::Error>>,
 }
 
 #[derive(Default)]
@@ -41,6 +41,7 @@ pub(super) struct Seed {
     replies: std::collections::VecDeque<String>,
     reply_at: u64,
     began: u64,
+    expires_at: Option<u64>,
 }
 
 fn humans(lobby: &Lobby) -> Option<[&Player; 4]> {
@@ -122,6 +123,9 @@ impl Seed {
         if self.stage != Stage::Ready {
             return false;
         }
+        if self.session_expired() {
+            return false;
+        }
         let Some(packet) = &self.packet else {
             return false;
         };
@@ -129,6 +133,14 @@ impl Seed {
             .enumerate()
             .all(|(i, p)| p.color == Some(i as u8) && p.handicap == Some(packet.handicaps[i]))
             && self.body_matches(lobby)
+    }
+
+    fn session_expired(&self) -> bool {
+        self.expires_at.is_some_and(|expiry| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(true, |now| expiry <= now.as_secs().saturating_add(3600))
+        })
     }
 
     fn body_matches(&self, lobby: &Lobby) -> bool {
@@ -151,7 +163,7 @@ impl Seed {
         self.notice = Some(reason.to_string());
         self.replies.clear();
         self.replies.push_back(
-            "Ladder statistics unavailable. The game will start without the ladder intro.".into(),
+            "Ladder unavailable. This game is unranked; the ladder intro will be skipped.".into(),
         );
     }
 
@@ -191,6 +203,7 @@ impl Seed {
             self.awaiting = None;
             self.replies.clear();
             self.written = false;
+            self.expires_at = None;
         }
         if !matches!(self.stage, Stage::Ready | Stage::Unavailable)
             && now.saturating_sub(self.began) >= 120
@@ -209,7 +222,13 @@ impl Seed {
         if !quiet {
             return Vec::new();
         }
-        if self.stage == Stage::Ready && !self.snapshot_ready(lobby) {
+        if self.stage == Stage::Ready && self.session_expired() {
+            self.began = now;
+            self.stage = Stage::Fetch;
+            self.packet = None;
+            self.profiles = None;
+            self.replies.clear();
+        } else if self.stage == Stage::Ready && !self.snapshot_ready(lobby) {
             self.began = now;
             self.stage = Stage::Write(0);
             self.written = false;
@@ -245,12 +264,11 @@ impl Seed {
                             if job_key != self.key {
                                 return Vec::new();
                             }
-                            match result.and_then(|profiles| {
-                                Packet::encode(&profiles).map(|packet| (profiles, packet))
-                            }) {
-                                Ok((profiles, packet)) => {
-                                    self.profiles = Some(profiles);
-                                    self.packet = Some(packet);
+                            match result {
+                                Ok(prepared) => {
+                                    self.expires_at = prepared.expires_at;
+                                    self.profiles = Some(prepared.profiles);
+                                    self.packet = Some(prepared.packet);
                                     self.stage = Stage::Write(0);
                                 }
                                 Err(error) => self.fail(error),
@@ -270,7 +288,7 @@ impl Seed {
                         rx,
                     });
                     thread::spawn(move || {
-                        let _ = tx.send(ladder::fetch(&tags));
+                        let _ = tx.send(ladder::prepare(&tags));
                     });
                 }
                 Vec::new()
@@ -335,7 +353,14 @@ impl Seed {
                     }
                 }
                 self.stage = Stage::Ready;
-                self.notice = Some("Ladder profiles confirmed for all four players.".into());
+                self.notice = Some(
+                    if packet.handicaps[1] == 84 {
+                        "Ladder profiles and result ticket confirmed for all four players."
+                    } else {
+                        "Ladder preview confirmed; result reporting is disabled."
+                    }
+                    .into(),
+                );
                 self.replies.extend(
                     self.profiles
                         .as_ref()
