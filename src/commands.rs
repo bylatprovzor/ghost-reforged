@@ -20,6 +20,7 @@ pub struct Outcome {
     pub start: bool,
     pub kick: Option<KickTarget>,
     pub color: Option<ColorRequest>,
+    pub stats: Option<String>,
     pub reply: Option<Command>,
     pub activity: Option<String>,
 }
@@ -223,6 +224,7 @@ impl LobbyCommands {
         let mut start = false;
         let mut kick = None;
         let mut color = None;
+        let mut stats = None;
         let reply = match command {
             ChatCommand::VoteStart => {
                 self.vote_deadline.get_or_insert(now + 60);
@@ -264,6 +266,15 @@ impl LobbyCommands {
             ),
             ChatCommand::From => info::regions(self.current.as_ref().unwrap(), argument),
             ChatCommand::Map => info::map(self.current.as_ref().unwrap()),
+            ChatCommand::Stats if crate::ladder::matches_map(&lobby.map_data.map_name) => {
+                match info::ladder_target(lobby, &key.name, argument) {
+                    Ok(tag) => {
+                        stats = Some(tag);
+                        String::new()
+                    }
+                    Err(message) => message.into(),
+                }
+            }
             ChatCommand::Stats => info::stats(context.history, &key.name, argument),
             ChatCommand::Color => {
                 let (reply, request) =
@@ -307,6 +318,7 @@ impl LobbyCommands {
             start,
             kick,
             color,
+            stats,
             reply: (!reply.is_empty())
                 .then(|| Command::new("SendGameChatMessage", json!({"content":reply}))),
             activity: Some(format!("{sender} · {}", command.name())),

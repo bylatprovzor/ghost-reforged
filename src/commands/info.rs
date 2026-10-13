@@ -85,3 +85,31 @@ pub(super) fn stats(history: Option<&History>, sender: &str, argument: &str) -> 
         Err(message) => message.into(),
     }
 }
+
+pub(super) fn ladder_target(
+    lobby: &Lobby,
+    sender: &str,
+    argument: &str,
+) -> Result<String, &'static str> {
+    if argument.is_empty() {
+        return Ok(sender.into());
+    }
+    let mut matches = lobby
+        .players
+        .iter()
+        .filter(|p| p.slot_status == 2 && p.slot_type == 0 && !p.is_self)
+        .filter(|p| {
+            p.name.eq_ignore_ascii_case(argument)
+                || p.name
+                    .split('#')
+                    .next()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(argument))
+        });
+    let player = matches
+        .next()
+        .ok_or("Player not found. Use ?stats [full BattleTag].")?;
+    if matches.next().is_some() {
+        return Err("That name is ambiguous. Use the full BattleTag.");
+    }
+    Ok(player.name.clone())
+}

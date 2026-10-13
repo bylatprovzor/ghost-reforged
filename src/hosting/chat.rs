@@ -74,6 +74,8 @@ pub(super) struct Chat {
     tracker: Tracker,
     replies: Replies,
     color: Option<PendingColor>,
+    pub lookup: crate::ladder::lookup::Lookup,
+    stats: Vec<String>,
 }
 impl Chat {
     pub fn new(path: Option<&Path>) -> Self {
@@ -83,6 +85,8 @@ impl Chat {
             tracker: Default::default(),
             replies: Default::default(),
             color: None,
+            lookup: Default::default(),
+            stats: Vec::new(),
         }
     }
     pub fn apply_settings(&mut self, settings: &crate::commands::CommandSettings) {
@@ -95,6 +99,8 @@ impl Chat {
         self.commands = Default::default();
         self.replies = Default::default();
         self.color = None;
+        self.lookup = Default::default();
+        self.stats.clear();
     }
     pub fn warning(&mut self) -> Option<String> {
         self.history.warning()
@@ -115,6 +121,16 @@ impl Chat {
         let milliseconds = elapsed.as_millis() as u64;
         let roster = event.is_some_and(|e| e["messageType"] == "GameLobbySetup");
         let lobby = engine.owned_lobby(now).filter(|_| identity);
+        let lobby = lobby.filter(|_| {
+            matches!(
+                engine.phase,
+                Phase::Lobby | Phase::Countdown(_) | Phase::Starting(_)
+            )
+        });
+        self.lookup.observe(lobby);
+        if lobby.map(|l| l.lobby_name.as_str()) != Some(self.replies.lobby.as_str()) {
+            self.stats.clear();
+        }
         self.replies.lobby(lobby.map(|l| l.lobby_name.as_str()));
         if roster && let Some(lobby) = lobby {
             self.tracker.observe(lobby, &mut self.history, unix_now());
@@ -132,6 +148,28 @@ impl Chat {
         {
             self.replies.push(text, milliseconds);
         }
+        if let Some(tag) = outcome.stats.take()
+            && !self.stats.contains(&tag)
+            && self.stats.len() < 24
+        {
+            self.stats.push(tag);
+        }
+        self.stats.retain(|tag| self.lookup.contains(tag));
+        if !engine
+            .config
+            .commands
+            .enabled(crate::commands::ChatCommand::Stats)
+        {
+            self.stats.clear();
+        }
+        self.stats.retain(|tag| {
+            if let Some(text) = self.lookup.query(tag, now) {
+                self.replies.push(&format!("{tag}: {text}"), milliseconds);
+                false
+            } else {
+                true
+            }
+        });
         if let Some(request) = outcome.color.take() {
             if engine.phase != Phase::Lobby || self.color.is_some() {
                 self.replies.push("Color change unavailable during another edit or countdown. Try again in the lobby.", milliseconds);

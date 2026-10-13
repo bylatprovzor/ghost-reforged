@@ -1,5 +1,6 @@
 //! Public ladder reads and the versioned lobby packet understood by the map.
 mod api;
+pub mod lookup;
 mod packet;
 mod session;
 pub use api::fetch;
@@ -20,9 +21,12 @@ pub struct Profile {
 
 impl Profile {
     pub fn announcement(&self) -> String {
+        format!("{}: {}", self.battletag, self.summary())
+    }
+
+    pub fn summary(&self) -> String {
         format!(
-            "{}: Wins: {}, Loss: {}, Rank: {}",
-            self.battletag,
+            "Wins: {}, Loss: {}, Rank: {}",
             self.wins,
             self.losses,
             self.rank.map_or_else(|| "???".into(), |r| format!("#{r}"))

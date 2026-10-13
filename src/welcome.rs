@@ -30,13 +30,16 @@ impl Welcome {
         Ok(())
     }
 
-    fn render(&self, player: &str) -> String {
+    fn render(&self, player: &str, stats: &str) -> String {
         let name: String = player
             .chars()
             .filter(|c| !c.is_control())
             .take(32)
             .collect();
-        let text = self.message.replace("#{playername}", &name);
+        let text = self
+            .message
+            .replace("{stats}", stats)
+            .replace("#{playername}", &name);
         let end = (0..=text.len().min(250))
             .rev()
             .find(|i| text.is_char_boundary(*i))
@@ -68,7 +71,13 @@ impl Announcements {
         self.queue.retain(|name| name != player);
     }
 
-    pub fn next(&mut self, lobby: &Lobby, settings: &Welcome, now: u64) -> Option<Command> {
+    pub fn next(
+        &mut self,
+        lobby: &Lobby,
+        settings: &Welcome,
+        now: u64,
+        lookup: &mut crate::ladder::lookup::Lookup,
+    ) -> Option<Command> {
         if !settings.enabled {
             self.queue.clear();
             return None;
@@ -82,10 +91,21 @@ impl Announcements {
                 .iter()
                 .any(|p| p.name == name && p.slot_status == 2 && p.slot_type == 0 && !p.is_self)
             {
+                let stats = if settings.message.contains("{stats}") {
+                    match lookup.query(&name, now) {
+                        Some(text) => text,
+                        None => {
+                            self.queue.push_front(name);
+                            return None;
+                        }
+                    }
+                } else {
+                    String::new()
+                };
                 self.last_sent = Some(now);
                 return Some(Command::new(
                     "SendGameChatMessage",
-                    json!({"content":settings.render(&name)}),
+                    json!({"content":settings.render(&name, &stats)}),
                 ));
             }
         }
@@ -104,6 +124,7 @@ mod tests {
         ]}))
         .unwrap();
         let mut queue = Announcements::default();
+        let mut lookup = crate::ladder::lookup::Lookup::default();
         queue.joined("One");
         queue.joined("One");
         queue.joined("Two");
@@ -112,32 +133,38 @@ mod tests {
             message: "Hi #{playername}".into(),
         };
         assert_eq!(
-            queue.next(&roster, &settings, 0).unwrap().payload["content"],
+            queue
+                .next(&roster, &settings, 0, &mut lookup)
+                .unwrap()
+                .payload["content"],
             "Hi One"
         );
-        assert!(queue.next(&roster, &settings, 0).is_none());
+        assert!(queue.next(&roster, &settings, 0, &mut lookup).is_none());
         queue.left("Two");
-        assert!(queue.next(&roster, &settings, 1).is_none());
+        assert!(queue.next(&roster, &settings, 1, &mut lookup).is_none());
         queue.joined("Two");
         settings.message = "Hello #{playername}".into();
         assert_eq!(
-            queue.next(&roster, &settings, 2).unwrap().payload["content"],
+            queue
+                .next(&roster, &settings, 2, &mut lookup)
+                .unwrap()
+                .payload["content"],
             "Hello Two"
         );
         queue.joined("One");
         settings.enabled = false;
-        assert!(queue.next(&roster, &settings, 3).is_none());
+        assert!(queue.next(&roster, &settings, 3, &mut lookup).is_none());
         settings.enabled = true;
-        assert!(queue.next(&roster, &settings, 4).is_none());
+        assert!(queue.next(&roster, &settings, 4, &mut lookup).is_none());
     }
     #[test]
     fn template_replaces_names_without_sending_commands_or_unbounded_text() {
         let mut welcome = Welcome::default();
-        assert!(welcome.render("Player").contains("lobby Player,"));
+        assert!(welcome.render("Player", "").contains("lobby Player,"));
         welcome.message = "/whisper #{playername}".into();
-        assert!(welcome.render("Player").starts_with(" /whisper"));
+        assert!(welcome.render("Player", "").starts_with(" /whisper"));
         welcome.message = "#{playername}".repeat(10);
-        assert!(welcome.render(&"é".repeat(32)).len() <= 250);
+        assert!(welcome.render(&"é".repeat(32), "").len() <= 250);
         welcome.message = "Hello\nWorld".into();
         assert!(welcome.validate().is_err());
     }

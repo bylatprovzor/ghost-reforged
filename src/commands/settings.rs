@@ -80,7 +80,7 @@ impl ChatCommand {
             Self::Map => "Show the current map name and file, including its version when present.",
             Self::Color => "Use ?color <color> to change your own color when the map allows it.",
             Self::Stats => {
-                "Use ?stats [name] for games started here and first/last seen dates (UTC)."
+                "Use ?stats [name] for ladder wins, losses and rank on ranked SCR maps; local hosting history on other maps."
             }
         }
     }

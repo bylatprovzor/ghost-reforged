@@ -355,7 +355,8 @@ pub(super) fn run(
             if identity_ok
                 && matches!(engine.phase, Phase::Lobby | Phase::Countdown(_))
                 && let Some(lobby) = engine.owned_lobby(now)
-                && let Some(command) = announcements.next(lobby, &engine.config.welcome, now)
+                && let Some(command) =
+                    announcements.next(lobby, &engine.config.welcome, now, &mut chat.lookup)
             {
                 client
                     .send(command.message, command.payload)

@@ -8,6 +8,56 @@ fn text(outcome: Outcome) -> String {
 }
 
 #[test]
+fn ranked_stats_resolve_native_players_and_other_maps_keep_local_history() {
+    let mut roster = lobby();
+    roster.map_data.map_name = crate::ladder::MAP_NAME.into();
+    roster.players[2].name = "Twin#1234".into();
+    roster.players[3].name = "Twin#2345".into();
+    let mut commands = LobbyCommands::default();
+    let mut settings = CommandSettings::default();
+    commands.observe(Some(&roster), 0);
+    assert_eq!(
+        commands
+            .handle(&chat("Player1", "?stats"), &settings, 1)
+            .stats
+            .as_deref(),
+        Some("Player1")
+    );
+    assert_eq!(
+        commands
+            .handle(&chat("Player1", "?stats Twin#2345"), &settings, 2)
+            .stats
+            .as_deref(),
+        Some("Twin#2345")
+    );
+    assert!(
+        text(commands.handle(&chat("Player1", "?stats Twin"), &settings, 3)).contains("ambiguous")
+    );
+    assert!(
+        commands
+            .handle(&chat("Unknown", "?stats"), &settings, 4)
+            .stats
+            .is_none()
+    );
+    let mut whisper = chat("Player1", "?stats");
+    whisper["payload"]["message"]["source"] = "whisper".into();
+    assert!(commands.handle(&whisper, &settings, 5).stats.is_none());
+    settings.set(ChatCommand::Stats, false);
+    assert!(
+        commands
+            .handle(&chat("Player1", "?stats"), &settings, 6)
+            .stats
+            .is_none()
+    );
+    settings.set(ChatCommand::Stats, true);
+    roster.map_data.map_name = "Other map".into();
+    commands.observe(Some(&roster), 7);
+    let result = commands.handle(&chat("Player1", "?stats"), &settings, 8);
+    assert!(result.stats.is_none());
+    assert!(text(result).contains("Statistics are unavailable"));
+}
+
+#[test]
 fn yes_joins_only_an_existing_unambiguous_vote_with_distinct_voters() {
     let mut commands = LobbyCommands::default();
     let settings = CommandSettings::default();

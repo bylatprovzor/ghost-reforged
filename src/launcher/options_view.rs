@@ -40,7 +40,9 @@ pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
             .text_size(14)
             .on_toggle(Message::Welcome),
         field("Message", &profile.welcome.message, Field::Welcome),
-        muted("Use #{playername} for the joining player's name."),
+        muted(
+            "Use #{playername} for the player's name and {stats} for ladder wins, losses and rank."
+        ),
         rule::horizontal(1),
         commands,
         rule::horizontal(1),
