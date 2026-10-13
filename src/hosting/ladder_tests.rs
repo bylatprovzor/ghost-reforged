@@ -42,6 +42,16 @@ fn apply(payload: &mut Value, commands: Vec<Command>, announcements: &mut Vec<St
             continue;
         };
         let rows = payload["players"].as_array_mut().unwrap();
+        let available_color = (0..24)
+            .find(|c| {
+                rows.iter().all(|r| {
+                    r["slot"] == slot
+                        || r["slotStatus"] != 2
+                        || r["isObserver"] == true
+                        || r["color"] != *c
+                })
+            })
+            .unwrap();
         let row = rows.iter_mut().find(|r| r["slot"] == slot).unwrap();
         let key = match command.message {
             "SetHandicap" => "handicap",
@@ -49,6 +59,9 @@ fn apply(payload: &mut Value, commands: Vec<Command>, announcements: &mut Vec<St
             "SetColor" => "color",
             "SetTeam" => "team",
             "SetComputerSlot" => {
+                row["slotStatus"] = json!(2);
+                row["slotType"] = json!(1);
+                row["color"] = json!(available_color);
                 row["name"] = json!(format!("Computer({})", command.payload["difficulty"]));
                 continue;
             }
@@ -75,6 +88,17 @@ fn prepared() -> (Seed, Engine, Value, Vec<String>, u64) {
 
 fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
     let (mut engine, mut payload) = fixture();
+    if session {
+        for row in payload["players"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .take(16)
+        {
+            row["team"] = json!(row["slot"].as_u64().unwrap() % 4);
+            row["color"] = row["slot"].clone();
+        }
+    }
     let mut seed = Seed::default();
     let (tx, rx) = mpsc::channel();
     let lobby = serde_json::from_value(payload.clone()).unwrap();
@@ -90,11 +114,12 @@ fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
         rank: Some(3),
     });
     tx.send(if session {
-        Packet::encode_session(&profiles, "0123456789abcde").map(|packet| ladder::Prepared {
-            profiles,
-            packet,
-            expires_at: Some(4102444800),
-        })
+        Packet::encode_session_regions(&profiles, "0123456789abcde", &[ladder::Region::Europe; 4])
+            .map(|packet| ladder::Prepared {
+                profiles,
+                packet,
+                expires_at: Some(4102444800),
+            })
     } else {
         ladder::Prepared::preview(profiles)
     })
@@ -125,9 +150,75 @@ fn seeding_survives_row_reordering_and_announces_every_profile_before_start() {
 #[test]
 fn result_ticket_uses_the_new_marker_and_gates_start_until_confirmed() {
     let (seed, mut engine, payload, _, now) = prepared_version(true);
-    assert_eq!(seed.packet.as_ref().unwrap().handicaps[1], 84);
+    assert_eq!(seed.packet.as_ref().unwrap().handicaps[0], 46);
+    assert!(four_teams(
+        &serde_json::from_value(payload.clone()).unwrap()
+    ));
     assert!(seed.ready(&serde_json::from_value(payload).unwrap()));
     assert_eq!(engine.start_now(now)[0].message, "LobbyStart");
+}
+
+#[test]
+fn empty_computer_seats_are_restored_before_four_humans_join() {
+    let (mut engine, mut payload) = fixture();
+    for row in payload["players"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .take(16)
+    {
+        row["team"] = json!(row["slot"].as_u64().unwrap() % 4);
+        row["slotStatus"] = json!(0);
+        row["slotType"] = json!(0);
+    }
+    let mut seed = Seed::default();
+    receive(&mut seed, &mut engine, &payload, 1);
+    let commands = seed.advance(&engine, 1, true, true);
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c.message == "SetComputerSlot")
+            .count(),
+        12
+    );
+    assert!(
+        commands
+            .iter()
+            .filter(|c| c.message == "SetComputerSlot")
+            .all(|c| (4..16).contains(&c.payload["slot"].as_u64().unwrap()))
+    );
+    apply(&mut payload, commands, &mut Vec::new());
+    receive(&mut seed, &mut engine, &payload, 2);
+    assert!(seed.advance(&engine, 2, true, true).is_empty());
+    assert!(!engine.can_start(2));
+    assert_eq!(
+        payload["players"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["slotType"] == 1)
+            .count(),
+        12
+    );
+    assert!(four_teams(&serde_json::from_value(payload).unwrap()));
+}
+
+#[test]
+fn unavailable_statistics_do_not_allow_a_missing_computer_role_to_start() {
+    let (mut seed, mut engine, mut payload, _, now) = prepared_version(true);
+    seed.stage = Stage::Unavailable;
+    for row in payload["players"].as_array_mut().unwrap() {
+        if row["slot"].as_u64().is_some_and(|s| s < 4) {
+            row["handicap"] = json!(100);
+        }
+        if row["slot"] == 4 {
+            row["slotStatus"] = json!(0);
+            row["slotType"] = json!(0);
+        }
+    }
+    receive(&mut seed, &mut engine, &payload, now + 1);
+    assert!(!seed.ready(&serde_json::from_value(payload).unwrap()));
+    assert!(engine.start_now(now + 1).is_empty());
 }
 
 #[test]
@@ -145,11 +236,13 @@ fn an_expired_session_clears_the_marker_before_registering_again() {
 
 #[test]
 fn roster_or_packet_changes_invalidate_all_start_paths() {
-    for field in ["name", "handicap", "race"] {
+    for field in ["name", "handicap", "race", "playerRegion"] {
         let (mut seed, mut engine, mut payload, _, now) = prepared();
         let rows = payload["players"].as_array_mut().unwrap();
         if field == "name" {
             rows.iter_mut().find(|p| p["team"] == 0).unwrap()[field] = json!("New#1234");
+        } else if field == "playerRegion" {
+            rows.iter_mut().find(|p| p["team"] == 0).unwrap()[field] = json!("eu");
         } else {
             rows.iter_mut().find(|p| p["color"] == 4).unwrap()[field] =
                 json!(if field == "race" { 32 } else { 99 });

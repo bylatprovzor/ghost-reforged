@@ -1,10 +1,13 @@
 //! Public ladder reads and the versioned lobby packet understood by the map.
 mod api;
+mod fields;
 pub mod lookup;
 mod packet;
+mod region;
 mod session;
 pub use api::fetch;
 pub use packet::{Packet, Setting};
+pub use region::Region;
 use serde::Deserialize;
 pub use session::{Prepared, prepare};
 

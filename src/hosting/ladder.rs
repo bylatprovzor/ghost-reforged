@@ -42,6 +42,7 @@ pub(super) struct Seed {
     reply_at: u64,
     began: u64,
     expires_at: Option<u64>,
+    room_awaiting: Option<(u64, u64)>,
 }
 
 fn humans(lobby: &Lobby) -> Option<[&Player; 4]> {
@@ -72,7 +73,13 @@ fn roster_key(lobby: &Lobby) -> Option<String> {
         lobby.map_data.map_path,
         lobby.lobby_name,
         rows.iter()
-            .map(|p| format!("{}:{:?}:{}", p.team, p.id, p.name))
+            .map(|p| format!(
+                "{}:{:?}:{}:{:?}",
+                p.team,
+                p.id,
+                p.name,
+                ladder::Region::from_player(p)
+            ))
             .collect::<Vec<_>>()
             .join("|")
     ))
@@ -85,6 +92,25 @@ fn by_color(lobby: &Lobby, color: u8) -> Option<&Player> {
         .filter(|p| p.slot_status == 2 && !p.is_observer && p.color == Some(color));
     let row = rows.next()?;
     rows.next().is_none().then_some(row)
+}
+
+fn four_teams(lobby: &Lobby) -> bool {
+    (0..16).all(|slot| {
+        lobby
+            .players
+            .iter()
+            .any(|p| p.slot == slot && p.team == slot % 4 && !p.is_observer)
+    })
+}
+
+fn computer_row<'a>(lobby: &'a Lobby, packet: &Packet, index: usize) -> Option<&'a Player> {
+    if matches!(packet.handicaps[0], 45 | 46) {
+        lobby.players.iter().find(|p| {
+            p.slot as usize == index + 4 && p.slot_type == 1 && p.slot_status == 2 && !p.is_observer
+        })
+    } else {
+        by_color(lobby, packet.computers[index].color)
+    }
 }
 
 impl Seed {
@@ -117,6 +143,17 @@ impl Seed {
         let Some(rows) = humans(lobby) else {
             return false;
         };
+        if four_teams(lobby)
+            && (rows.iter().enumerate().any(|(i, p)| p.slot as usize != i)
+                || !(4..16).all(|slot| {
+                    lobby
+                        .players
+                        .iter()
+                        .any(|p| p.slot == slot && p.slot_type == 1 && p.slot_status == 2)
+                }))
+        {
+            return false;
+        }
         if self.stage == Stage::Unavailable {
             return rows.iter().all(|p| p.handicap == Some(100));
         }
@@ -145,9 +182,10 @@ impl Seed {
 
     fn body_matches(&self, lobby: &Lobby) -> bool {
         self.packet.as_ref().is_some_and(|packet| {
-            packet.computers.iter().all(|s| {
-                by_color(lobby, s.color).is_some_and(|p| {
+            packet.computers.iter().enumerate().all(|(index, s)| {
+                computer_row(lobby, packet, index).is_some_and(|p| {
                     p.slot_type == 1
+                        && p.color == Some(s.color)
                         && p.team == s.team
                         && p.handicap == Some(s.handicap)
                         && p.race == Some(s.race)
@@ -188,6 +226,40 @@ impl Seed {
         };
         if !identity_ok || !ladder::matches_map(&lobby.map_data.map_name) {
             return Vec::new();
+        }
+        // Unlocked custom forces retain their seats but Warcraft opens the AI
+        // slots. Fill only those empty reserved seats, before accepting a roster.
+        if four_teams(lobby) {
+            let empty: Vec<_> = lobby
+                .players
+                .iter()
+                .filter(|p| (4..16).contains(&p.slot) && p.slot_status != 2)
+                .collect();
+            if !empty.is_empty() {
+                if !quiet {
+                    return Vec::new();
+                }
+                if let Some((sequence, at)) = self.room_awaiting {
+                    if now.saturating_sub(at) >= 8 {
+                        self.notice = Some(
+                            "Warcraft did not restore the ranked map's computer slots.".into(),
+                        );
+                        return Vec::new();
+                    }
+                    if self.sequence <= sequence {
+                        return Vec::new();
+                    }
+                }
+                let began = self.room_awaiting.map_or(now, |(_, at)| at);
+                self.room_awaiting = Some((self.sequence, began));
+                let mut commands: Vec<_> = empty
+                    .into_iter()
+                    .map(|p| Command::new("SetComputerSlot", json!({"slot":p.slot,"difficulty":1})))
+                    .collect();
+                commands.push(Command::empty("SendGameLobbySetup"));
+                return commands;
+            }
+            self.room_awaiting = None;
         }
         let Some(key) = roster_key(lobby) else {
             self.key.clear();
@@ -282,13 +354,14 @@ impl Seed {
                     }
                 } else {
                     let tags = humans(lobby).unwrap().map(|p| p.name.clone());
+                    let regions = humans(lobby).unwrap().map(ladder::Region::from_player);
                     let (tx, rx) = mpsc::channel();
                     self.job = Some(Job {
                         key: self.key.clone(),
                         rx,
                     });
                     thread::spawn(move || {
-                        let _ = tx.send(ladder::prepare(&tags));
+                        let _ = tx.send(ladder::prepare(&tags, &regions));
                     });
                 }
                 Vec::new()
@@ -303,7 +376,9 @@ impl Seed {
                     return Vec::new();
                 }
                 let s = self.packet.as_ref().unwrap().computers[index].clone();
-                let Some(p) = by_color(lobby, s.color).filter(|p| p.slot_type == 1) else {
+                let packet = self.packet.as_ref().unwrap();
+                let Some(p) = computer_row(lobby, packet, index).filter(|p| p.slot_type == 1)
+                else {
                     self.fail("Ladder computer slot is missing.");
                     return Vec::new();
                 };
@@ -311,6 +386,10 @@ impl Seed {
                     if p.handicap != Some(s.handicap) || p.race != Some(s.race) || p.team != s.team
                     {
                         self.fail("Warcraft rejected a ladder packet field.");
+                    } else if p.color != Some(s.color) {
+                        // SetComputerSlot recreates the AI and resets its color.
+                        // Apply the payload color only after that acknowledgement.
+                        return self.set_color(lobby, p, s.color, now);
                     } else {
                         self.stage = Stage::Write(index + 1);
                         self.written = false;
@@ -320,18 +399,21 @@ impl Seed {
                 self.written = true;
                 // Team changes can reorder rows. Resolve the next color only
                 // after receiving a fresh snapshot of this completed edit.
-                self.sent(
-                    now,
-                    vec![
-                        Command::new(
-                            "SetComputerSlot",
-                            json!({"slot":p.slot,"difficulty":s.difficulty}),
-                        ),
-                        Command::new("SetRace", json!({"slot":p.slot,"raceId":s.race})),
-                        Command::new("SetHandicap", json!({"slot":p.slot,"handicap":s.handicap})),
-                        Command::new("SetTeam", json!({"slot":p.slot,"team":s.team})),
-                    ],
-                )
+                let mut commands = vec![
+                    Command::new(
+                        "SetComputerSlot",
+                        json!({"slot":p.slot,"difficulty":s.difficulty}),
+                    ),
+                    Command::new("SetRace", json!({"slot":p.slot,"raceId":s.race})),
+                    Command::new("SetHandicap", json!({"slot":p.slot,"handicap":s.handicap})),
+                ];
+                if !matches!(packet.handicaps[0], 45 | 46) {
+                    commands.push(Command::new(
+                        "SetTeam",
+                        json!({"slot":p.slot,"team":s.team}),
+                    ));
+                }
+                self.sent(now, commands)
             }
             Stage::Commit => {
                 if !self.body_matches(lobby) {
@@ -354,7 +436,9 @@ impl Seed {
                 }
                 self.stage = Stage::Ready;
                 self.notice = Some(
-                    if packet.handicaps[1] == 84 {
+                    if packet.handicaps[0] == 46
+                        || (packet.handicaps[0] == 47 && packet.handicaps[1] == 84)
+                    {
                         "Ladder profiles and result ticket confirmed for all four players."
                     } else {
                         "Ladder preview confirmed; result reporting is disabled."
@@ -394,6 +478,25 @@ impl Seed {
             .collect();
         if active.len() != 16 || active.iter().filter(|p| p.slot_type == 1).count() != 12 {
             self.fail("The ranked map requires its twelve computer slots.");
+            return Vec::new();
+        }
+        if four_teams(lobby) {
+            if humans(lobby)
+                .unwrap()
+                .iter()
+                .enumerate()
+                .any(|(i, p)| p.slot as usize != i)
+            {
+                self.fail("Ranked human players must occupy the four original human seats.");
+                return Vec::new();
+            }
+            for color in 0..16 {
+                let target = active.iter().find(|p| p.slot == color).unwrap();
+                if target.color != Some(color) {
+                    return self.set_color(lobby, target, color, now);
+                }
+            }
+            self.stage = Stage::Fetch;
             return Vec::new();
         }
         // A newly created map uses one team per role. A reconnect can reuse the
@@ -442,6 +545,27 @@ impl Seed {
         }
         self.stage = Stage::Fetch;
         Vec::new()
+    }
+
+    fn set_color(&mut self, lobby: &Lobby, target: &Player, color: u8, now: u64) -> Vec<Command> {
+        let active: Vec<_> = lobby
+            .players
+            .iter()
+            .filter(|p| p.slot_status == 2 && !p.is_observer)
+            .collect();
+        let (slot, next) = if let Some(occupied) = active.iter().find(|p| p.color == Some(color)) {
+            let Some(free) = (4..24).find(|c| active.iter().all(|p| p.color != Some(*c))) else {
+                self.fail("No spare lobby color for the ranked map.");
+                return Vec::new();
+            };
+            (occupied.slot, free)
+        } else {
+            (target.slot, color)
+        };
+        self.sent(
+            now,
+            vec![Command::new("SetColor", json!({"slot":slot,"color":next}))],
+        )
     }
 }
 

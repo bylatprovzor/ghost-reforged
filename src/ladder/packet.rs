@@ -1,4 +1,4 @@
-use super::{Error, Profile};
+use super::{Error, Profile, Region};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Setting {
@@ -17,6 +17,55 @@ pub struct Packet {
 
 impl Packet {
     pub fn encode_session(profiles: &[Profile; 4], ticket: &str) -> Result<Self, Error> {
+        Ok(Self::from_digits(
+            Self::session_digits(profiles, ticket)?,
+            84,
+        ))
+    }
+
+    pub fn encode_session_regions(
+        profiles: &[Profile; 4],
+        ticket: &str,
+        regions: &[Region; 4],
+    ) -> Result<Self, Error> {
+        let digits = Self::session_digits(profiles, ticket)?;
+        Ok(Self::with_regions(digits, regions, 46))
+    }
+
+    pub fn encode_preview_regions(
+        profiles: &[Profile; 4],
+        regions: &[Region; 4],
+    ) -> Result<Self, Error> {
+        Ok(Self::with_regions(
+            Self::profile_digits(profiles)?,
+            regions,
+            45,
+        ))
+    }
+
+    fn with_regions(digits: [u32; 12], regions: &[Region; 4], marker: u8) -> Self {
+        // V3 keeps the full body capacity. Marker 46 includes a result ticket;
+        // marker 45 is a preview using the original fixed-width profile body.
+        // the other three base-100 fields hold 625 region combinations and
+        // a checksum modulo 1597 covering both regions and body. This detects
+        // incomplete lobby edits, not forged profiles; v1/v2 stay unchanged.
+        let region_code = regions.iter().rev().fold(0, |n, r| n * 5 + *r as u32);
+        let checksum = digits
+            .iter()
+            .fold((31 + region_code) % 1597, |sum, d| (sum * 31 + d) % 1597);
+        let control = checksum * 625 + region_code;
+        let mut packet = Self::from_digits(digits, 84);
+        packet.computers = super::fields::encode(digits);
+        packet.handicaps = [
+            marker,
+            (control % 100 + 1) as u8,
+            (control / 100 % 100 + 1) as u8,
+            (control / 10000 + 1) as u8,
+        ];
+        packet
+    }
+
+    fn session_digits(profiles: &[Profile; 4], ticket: &str) -> Result<[u32; 12], Error> {
         // V2: 3 widths (4 bits each), 60 ticket bits, then four variable-width
         // rank/wins/losses records. V1 retains its original interpretation.
         Self::encode(profiles)?;
@@ -61,11 +110,15 @@ impl Packet {
                 push(u64::from(value), w);
             }
         }
-        Ok(Self::from_digits(digits, 84))
+        Ok(digits)
     }
 
     // Version 1 agrees with the map's intro-seed.j. Never clamp statistics.
     pub fn encode(profiles: &[Profile; 4]) -> Result<Self, Error> {
+        Ok(Self::from_digits(Self::profile_digits(profiles)?, 83))
+    }
+
+    fn profile_digits(profiles: &[Profile; 4]) -> Result<[u32; 12], Error> {
         let mut digits = [0u32; 12];
         for (i, p) in profiles.iter().enumerate() {
             let rank = p.rank.unwrap_or(0);
@@ -80,7 +133,7 @@ impl Packet {
                 digits[i * 3 + digit] = ((bits >> (digit * 14)) & 16383) as u32;
             }
         }
-        Ok(Self::from_digits(digits, 83))
+        Ok(digits)
     }
 
     fn from_digits(digits: [u32; 12], version_marker: u8) -> Self {
@@ -111,6 +164,60 @@ impl Packet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_region_combinations_preserve_the_session_body_and_checksum() {
+        // Exactly fills the v2 body: rank 8 + wins 9 + losses 7 bits per row.
+        let profiles = std::array::from_fn(|i| Profile {
+            slot: i as u8,
+            battletag: format!("Player{i}#1234"),
+            rank: Some(255),
+            wins: 511,
+            losses: 127,
+        });
+        let old = Packet::encode_session(&profiles, "0123456789abcde").unwrap();
+        let values = [
+            Region::Unknown,
+            Region::Europe,
+            Region::Americas,
+            Region::Asia,
+            Region::China,
+        ];
+        for code in 0..625 {
+            let mut remaining = code;
+            let regions = std::array::from_fn(|_| {
+                let r = values[remaining % 5];
+                remaining /= 5;
+                r
+            });
+            let packet =
+                Packet::encode_session_regions(&profiles, "0123456789abcde", &regions).unwrap();
+            let bytes = super::super::fields::decode_bytes(&packet.computers);
+            assert_eq!(packet.handicaps[0], 46);
+            assert!(packet.handicaps.iter().all(|h| (1..=100).contains(h)));
+            let control = u32::from(packet.handicaps[1] - 1)
+                + 100 * u32::from(packet.handicaps[2] - 1)
+                + 10000 * u32::from(packet.handicaps[3] - 1);
+            assert_eq!(control % 625, code as u32);
+            let mut checksum = (31 + control % 625) % 1597;
+            for s in &old.computers {
+                let digit = u32::from(s.handicap - 1)
+                    + 100 * [1, 2, 8, 4].iter().position(|r| *r == s.race).unwrap() as u32
+                    + 400 * u32::from(s.difficulty)
+                    + 1200 * u32::from(s.team - 4);
+                checksum = (checksum * 31 + digit) % 1597;
+            }
+            assert_eq!(control / 625, checksum);
+            let words = Packet::session_digits(&profiles, "0123456789abcde").unwrap();
+            for bit in 0..168 {
+                assert_eq!(
+                    (bytes[bit / 8] >> (bit % 8)) & 1,
+                    ((words[bit / 14] >> (bit % 14)) & 1) as u8
+                );
+            }
+        }
+    }
+
     #[test]
     fn session_packet_preserves_the_ticket_and_every_profile_bit() {
         let profiles = [(3, 258, 42), (17, 213, 87), (64, 180, 120), (0, 1, 1)]
@@ -180,6 +287,12 @@ mod tests {
             rank: Some(262143),
         });
         let packet = Packet::encode(&profiles).unwrap();
+        let preview = Packet::encode_preview_regions(&profiles, &[Region::China; 4]).unwrap();
+        assert_eq!(preview.handicaps[0], 45);
+        assert_eq!(
+            super::super::fields::decode_bytes(&preview.computers),
+            [255; 21]
+        );
         assert!(
             packet
                 .computers

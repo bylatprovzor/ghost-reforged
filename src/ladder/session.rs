@@ -1,4 +1,4 @@
-use super::{Error, Packet, Profile};
+use super::{Error, Packet, Profile, Region};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -21,10 +21,16 @@ impl Prepared {
 
 // Only the host machine needs this credential. Never write it into the map,
 // lobby, application logs, or a serialized user configuration.
-pub fn prepare(tags: &[String; 4]) -> Result<Prepared, Error> {
+pub fn prepare(tags: &[String; 4], regions: &[Region; 4]) -> Result<Prepared, Error> {
     let mode = std::env::var("W3LADDER_MODE").unwrap_or_else(|_| "ranked".into());
     if mode == "preview" {
-        return Prepared::preview(super::fetch(tags)?);
+        let profiles = super::fetch(tags)?;
+        let packet = Packet::encode_preview_regions(&profiles, regions)?;
+        return Ok(Prepared {
+            profiles,
+            packet,
+            expires_at: None,
+        });
     }
     let Some(key) = std::env::var_os("W3LADDER_COLLECTOR_KEY") else {
         return Err(Error::Unavailable);
@@ -63,7 +69,7 @@ pub fn prepare(tags: &[String; 4]) -> Result<Prepared, Error> {
         .limit(16 * 1024)
         .read_to_string()
         .map_err(|_| Error::Unavailable)?;
-    validate(&body, tags, &match_id)
+    validate(&body, tags, &match_id, regions)
 }
 
 #[cfg(test)]
@@ -74,8 +80,8 @@ mod tests {
     fn live_session_registration_returns_an_encodable_result_ticket() {
         assert_eq!(std::env::var("W3LADDER_MODE").as_deref(), Ok("test"));
         let tags = std::array::from_fn(|i| format!("LadderRelayTest{i}#900001"));
-        let prepared = prepare(&tags).unwrap();
-        assert_eq!(prepared.packet.handicaps[1], 84);
+        let prepared = prepare(&tags, &[Region::Europe; 4]).unwrap();
+        assert_eq!(prepared.packet.handicaps[0], 46);
         assert!(prepared.expires_at.is_some());
         assert!(
             prepared
@@ -88,6 +94,9 @@ mod tests {
     #[test]
     fn session_reply_must_match_the_request_and_have_a_live_complete_ticket() {
         let tags = std::array::from_fn(|i| format!("Player{i}#1234"));
+        let validate = |body: &str, tags: &[String; 4], id: &str| {
+            super::validate(body, tags, id, &[Region::Unknown; 4])
+        };
         let mut data = json!({"version":2,"minimum_games":3,"match_id":"test-session-001",
             "ticket":"0123456789abcde","expires_at":4102444800u64,
             "players":tags.iter().enumerate().map(|(slot,tag)|
@@ -103,7 +112,12 @@ mod tests {
     }
 }
 
-fn validate(body: &str, tags: &[String; 4], match_id: &str) -> Result<Prepared, Error> {
+fn validate(
+    body: &str,
+    tags: &[String; 4],
+    match_id: &str,
+    regions: &[Region; 4],
+) -> Result<Prepared, Error> {
     let mut data: Value = serde_json::from_str(body).map_err(|_| Error::InvalidRoster)?;
     if data["version"] != 2 || data["match_id"] != match_id {
         return Err(Error::InvalidRoster);
@@ -124,7 +138,7 @@ fn validate(body: &str, tags: &[String; 4], match_id: &str) -> Result<Prepared, 
         .to_owned();
     data["version"] = json!(1);
     let profiles = super::api::validate(&data.to_string(), tags)?;
-    let packet = Packet::encode_session(&profiles, &ticket)?;
+    let packet = Packet::encode_session_regions(&profiles, &ticket, regions)?;
     Ok(Prepared {
         profiles,
         packet,
