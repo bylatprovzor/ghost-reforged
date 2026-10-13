@@ -5,6 +5,7 @@ use control::{Reservation, dispatch, reserve};
 mod connection;
 mod controller;
 mod kick;
+mod ladder;
 mod repair;
 pub use kick::KickRequest;
 mod slots;

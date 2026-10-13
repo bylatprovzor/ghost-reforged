@@ -29,6 +29,7 @@ iced = { version = "0.14", default-features = false, features = ["tiny-skia", "t
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 fs2 = "0.4"
 tempfile = "3"
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 [target.'cfg(windows)'.dependencies]
 sha2 = "0.10"

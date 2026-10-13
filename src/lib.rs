@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod engine;
 pub mod hosting;
+pub mod ladder;
 pub mod protocol;
 pub mod recovery;
 pub mod stats;

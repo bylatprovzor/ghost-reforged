@@ -58,6 +58,7 @@ pub(super) fn run(
     let mut kick_requested: Option<(crate::commands::KickTarget, u64, kick::RefreshGate)> = None;
     let mut manual_kick = kick::PendingKick::default();
     let mut slot_edit = slots::PendingSlot::default();
+    let mut ladder_seed = ladder::Seed::default();
     loop {
         let step = supervision::attempt(|| -> Result<Step, String> {
             let game = resources
@@ -111,6 +112,14 @@ pub(super) fn run(
             let mut commands = if repair_lobby {
                 Vec::new()
             } else {
+                if let Some(event) = &event
+                    && event["messageType"] == "GameLobbySetup"
+                {
+                    ladder_seed.observe();
+                    let ready = serde_json::from_value::<Lobby>(event["payload"].clone())
+                        .is_ok_and(|lobby| ladder_seed.ready(&lobby));
+                    engine.set_ladder_ready(ready);
+                }
                 dispatch(
                     &mut engine,
                     event.as_ref(),
@@ -138,6 +147,13 @@ pub(super) fn run(
                 && engine.owned_lobby(now).is_some()
             {
                 identity_ok = identity.confirm(&event["payload"])?;
+            }
+            commands.extend(ladder_seed.advance(&engine, now, event.is_none(), identity_ok));
+            if let Some(lobby) = engine.owned_lobby(now) {
+                engine.set_ladder_ready(ladder_seed.ready(lobby));
+            }
+            if let Some(notice) = ladder_seed.notice() {
+                let _ = tx.send(Event::Activity(Activity::Command(notice)));
             }
             if let Some((command, line)) = manual_kick.confirm(
                 &engine,
@@ -281,6 +297,8 @@ pub(super) fn run(
             }
             for command in commands {
                 if command.message == "CreateLobby" {
+                    ladder_seed.reset();
+                    engine.set_ladder_ready(false);
                     identity_ok = false;
                     let number = engine.number();
                     if reserved != Some(number) {
@@ -409,6 +427,7 @@ pub(super) fn run(
         kick_requested = None;
         manual_kick = Default::default();
         slot_edit = Default::default();
+        ladder_seed.reset();
         chat.reset();
         deferred_controls
             .retain(|control| matches!(control, Control::Settings(_) | Control::StartRule { .. }));

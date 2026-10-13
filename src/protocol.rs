@@ -107,6 +107,10 @@ pub struct MapData {
 #[serde(rename_all = "camelCase")]
 pub struct Player {
     #[serde(default, deserialize_with = "optional_metadata")]
+    pub handicap: Option<u8>,
+    #[serde(default, deserialize_with = "optional_metadata")]
+    pub race: Option<u8>,
+    #[serde(default, deserialize_with = "optional_metadata")]
     pub player_region: String,
     #[serde(default, deserialize_with = "optional_metadata")]
     pub gateway_id: Option<i32>,

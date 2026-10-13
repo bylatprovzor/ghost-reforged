@@ -50,6 +50,7 @@ pub struct Engine {
     recovery_cancel: Option<u64>,
     retry_start_after: u64,
     notice: Option<String>,
+    ladder_ready: bool,
 }
 
 impl Engine {
@@ -76,6 +77,7 @@ impl Engine {
             recovery_cancel: None,
             retry_start_after: 0,
             notice: None,
+            ladder_ready: false,
         }
     }
 
@@ -420,7 +422,16 @@ impl Engine {
                     .local()
                     .is_some_and(|p| self.config.host_mode != HostMode::Observer || p.is_observer)
                     && lobby.occupied_players() > 0
+                    && self.ladder_allows_start(lobby)
             })
+    }
+
+    pub(crate) fn set_ladder_ready(&mut self, ready: bool) {
+        self.ladder_ready = ready;
+    }
+
+    fn ladder_allows_start(&self, lobby: &Lobby) -> bool {
+        !crate::ladder::matches_map(&lobby.map_data.map_name) || self.ladder_ready
     }
 
     pub fn start_now(&mut self, now: u64) -> Vec<Command> {
@@ -535,7 +546,7 @@ impl Engine {
                 } else {
                     lobby.humans(self.config.count_host) >= self.config.min_players as usize
                 });
-        if !enough {
+        if !enough || !self.ladder_allows_start(lobby) {
             if matches!(self.phase, Phase::Starting(_)) {
                 self.notice = Some(format!(
                     "Countdown cancelled: {}.",
