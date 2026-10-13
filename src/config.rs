@@ -21,6 +21,7 @@ pub enum ConfigError {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub headless: bool,
     pub expected_version: String,
     pub maps: Vec<PathBuf>,
     pub lobby_name: String,
@@ -126,6 +127,7 @@ impl Default for MapSettings {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            headless: false,
             expected_version: "3.0.0.24268".into(),
             maps: Vec::new(),
             lobby_name: "GHost Rust #{n}".into(),

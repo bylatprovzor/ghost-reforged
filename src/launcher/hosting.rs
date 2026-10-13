@@ -1,39 +1,12 @@
 use super::app::App;
-use ghost_reforged::{
-    config::{Config, HostMode},
-    hosting::{Activity, Control, Event, Worker},
-};
+use ghost_reforged::hosting::{Activity, Control, Event, Worker};
 use std::time::{Duration, Instant};
 
 impl App {
     pub(super) fn start_hosting(&mut self) -> Result<(), String> {
         self.save()?;
         let p = self.form.read()?;
-        let map = p.map.ok_or("Select a Warcraft III map first.")?;
-        let map = super::maps::validate(&map)?;
-        let config = Config {
-            maps: vec![map],
-            host_mode: HostMode::Observer,
-            lobby_name: p.lobby_pattern,
-            first_number: p.next_number,
-            min_players: p.players,
-            game_speed: p.speed.wire(),
-            require_full: p.require_full,
-            rehost_delay_seconds: p.rehost_delay_seconds,
-            empty_rehost_seconds: p.empty_rehost_seconds,
-            auto_start: true,
-            commands: p.commands,
-            stats_path: Some(self.data_directory.join("players.json")),
-            welcome: p.welcome,
-            resume_lobby: true,
-            // LobbyStart owns the game's native countdown. Never add a second one.
-            countdown_seconds: 0,
-            leave_on_load: p.rehost,
-            restart_on_load: p.rehost,
-            private_game: p.private_game,
-            max_games: if p.rehost { 0 } else { 1 },
-            ..Config::default()
-        };
+        let config = p.config(&self.data_directory)?;
         self.worker = Some(Worker::start(config)?);
         self.hosting_requested = true;
         self.last_reserved = None;
@@ -77,7 +50,11 @@ impl App {
                 break;
             };
             match event {
-                Event::ClientChanged(pid) => self.preview.target(pid),
+                Event::ClientChanged(pid) => {
+                    self.client_pid = pid;
+                    self.preview
+                        .target(pid.filter(|_| !self.form.profile.headless));
+                }
                 Event::VisualChanged => self.preview.request(),
                 Event::Activity(event) => {
                     self.preview.request();
@@ -103,6 +80,7 @@ impl App {
                     }
                 }
                 Event::Finished(result) => {
+                    self.client_pid = None;
                     self.hosting_requested = false;
                     self.preview.target(None);
                     self.worker = None;

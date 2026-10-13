@@ -104,6 +104,9 @@ pub(super) fn connect(
             .identity
             .as_mut()
             .map_or(Ok(()), |identity| identity.cancel_creation());
+        if let Some(game) = resources.game.as_mut() {
+            game.low_resource(false)?;
+        }
         let generation = resources.generation;
         let opened = attempt(|| {
             restored.and_then(|()| connection::open(&config, tx, stop, repair, resources))

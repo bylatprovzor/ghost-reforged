@@ -59,7 +59,7 @@ try {
     $installedExe = Join-Path $destination 'ghost-reforged.exe'
     $expectedHash = (Get-FileHash -LiteralPath (Join-Path $release 'ghost-reforged.exe')).Hash
     Assert-True ((Get-FileHash -LiteralPath $installedExe).Hash -eq $expectedHash) 'Installed executable differs from release.'
-    foreach ($name in @('README.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')) {
+    foreach ($name in @('ghost-reforged-cli.exe', 'README.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')) {
         Assert-True (Test-Path -LiteralPath (Join-Path $destination $name)) "Missing installed file: $name."
     }
     $sentinel = Join-Path $destination 'profiles.json'

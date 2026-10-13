@@ -179,6 +179,75 @@ fn eventually(mut predicate: impl FnMut() -> bool) {
 }
 
 #[test]
+fn low_resource_mode_minimizes_and_restores_without_revealing_the_window() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let window = fixture.window();
+    let guard = Guard::start(fixture.child.id()).unwrap();
+    guard.minimize(true).unwrap();
+    eventually(|| unsafe { IsIconic(window) != 0 && IsWindowVisible(window) == 0 });
+    assert!(is_transparent(window));
+    fixture.command("reset");
+    eventually(|| unsafe { IsIconic(window) != 0 && IsWindowVisible(window) == 0 });
+    guard.minimize(false).unwrap();
+    assert_eq!(
+        unsafe { IsIconic(window) },
+        0,
+        "Restore must be applied before success"
+    );
+    eventually(|| unsafe { IsIconic(window) == 0 && IsWindowVisible(window) == 0 });
+    assert!(is_transparent(window));
+    drop(guard);
+    eventually(|| !is_transparent(window));
+    assert_eq!(unsafe { IsIconic(window) }, 0);
+}
+
+#[test]
+fn blocked_restore_is_not_reported_ready_and_later_completes() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let window = fixture.window();
+    let guard = Guard::start(fixture.child.id()).unwrap();
+    guard.minimize(true).unwrap();
+    fixture.command("block");
+    let started = Instant::now();
+    assert!(guard.minimize(false).is_err());
+    assert!(started.elapsed() < Duration::from_millis(2500));
+    eventually(|| unsafe { IsIconic(window) == 0 && IsWindowVisible(window) == 0 });
+    guard.minimize(false).unwrap();
+    assert!(is_transparent(window));
+}
+
+#[test]
+fn timed_out_minimize_cannot_overtake_a_later_restore() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let window = fixture.window();
+    let guard = Guard::start(fixture.child.id()).unwrap();
+    fixture.command("block");
+    assert!(guard.minimize(true).is_err());
+    let started = Instant::now();
+    let result = guard.minimize(false);
+    assert!(result.is_err() || started.elapsed() >= Duration::from_secs(1));
+    eventually(|| unsafe { IsIconic(window) == 0 && IsWindowVisible(window) == 0 });
+    guard.minimize(false).unwrap();
+    thread::sleep(Duration::from_millis(1100));
+    assert_eq!(unsafe { IsIconic(window) }, 0);
+}
+
+#[test]
+fn dropping_a_minimizing_guard_does_not_leave_a_previously_normal_window_minimized() {
+    let _test = TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::start();
+    let window = fixture.window();
+    let guard = Guard::start(fixture.child.id()).unwrap();
+    guard.minimize(true).unwrap();
+    eventually(|| unsafe { IsIconic(window) != 0 });
+    drop(guard);
+    eventually(|| unsafe { IsIconic(window) == 0 } && !is_transparent(window));
+}
+
+#[test]
 fn native_guard_survives_show_recreation_capture_and_restores_on_stop() {
     let _test = TEST_PRESENTATION.lock().unwrap();
     let mut fixture = Fixture::start();

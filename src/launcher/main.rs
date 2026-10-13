@@ -13,6 +13,7 @@ mod frame_art;
 mod hosting;
 mod hosting_view;
 mod journal;
+mod launch_args;
 mod map_name;
 mod maps;
 mod motion;
@@ -35,39 +36,36 @@ mod view;
 mod widgets;
 
 use clap::Parser;
+use ghost_reforged::console::{self, Args};
 use iced::Task;
-use std::path::PathBuf;
-
-#[derive(Parser)]
-#[command(about = "GHost Reforged — Warcraft III hosting profile launcher")]
-struct Args {
-    /// Use a separate profile directory.
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
-    /// Preselect a map without modifying the file.
-    #[arg(long)]
-    map: Option<PathBuf>,
-    /// Start hosting with the selected profile when the launcher opens.
-    #[arg(long)]
-    host: bool,
-}
 
 fn main() -> iced::Result {
+    if ghost_reforged::background::render_guardian_entry() {
+        return Ok(());
+    }
+    if std::env::args().len() > 1 {
+        console::attach_console();
+    }
     let args = Args::parse();
-    let directory = args.data_dir.unwrap_or_else(|| {
-        let root = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        storage::Store::default_directory(&root)
-    });
+    if args.no_gui || args.command.is_some() {
+        let result = console::run(args);
+        if let Err(error) = &result {
+            eprintln!("{error}");
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    let directory = console::directory(&args);
     iced::application(
         move || {
-            let mut state = app::App::new(&directory, args.map.clone());
+            let mut state = app::App::new(&directory, None);
+            let configured = state.apply_launch_args(&args);
+            let ready = configured.is_ok();
+            state.notify(configured, "");
             let task = Task::batch([
                 state.update(app::Message::PollProcess),
                 Task::perform(updates::check(), app::Message::UpdateChecked),
             ]);
-            if args.host {
+            if args.host && ready {
                 let result = state.start_hosting();
                 state.notify(result, "");
             }

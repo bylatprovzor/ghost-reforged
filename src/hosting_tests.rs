@@ -367,6 +367,9 @@ fn shutdown_tracks_owned_stale_lobbies_but_not_a_running_game() {
     let mut engine = ready(true);
     assert!(engine.owned_lobby(100).is_none());
     assert_eq!(engine.shutdown_identity().unwrap().0, "Test #1");
+    engine.phase = Phase::Leaving(99);
+    assert_eq!(engine.shutdown_identity().unwrap().0, "Test #1");
+    engine.phase = Phase::Lobby;
     engine.on_event(&lobby(true), 100);
     engine.start_now(100);
     assert!(engine.shutdown_identity().is_some());
@@ -381,6 +384,7 @@ fn shutdown_tracks_owned_stale_lobbies_but_not_a_running_game() {
 fn live_settings_change_the_current_lobby_without_recreating_it() {
     let mut engine = ready(true);
     let settings = LiveSettings {
+        headless: false,
         minimum: 3,
         full: false,
         rehost: false,

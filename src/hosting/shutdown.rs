@@ -12,6 +12,40 @@ use std::{
 const UNCONFIRMED: &str =
     "Hosting stopped, but lobby closure could not be confirmed. Inspect Warcraft III.";
 
+/// Cleanup failures must neither skip native departure nor turn into a successful Stop.
+pub(super) fn finish(
+    resumed: Result<(), String>,
+    identity: Result<(), String>,
+    close: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let errors: Vec<_> = [resumed, identity, close()]
+        .into_iter()
+        .filter_map(Result::err)
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join(" "))
+    }
+}
+
+pub(super) fn stop(
+    resources: &mut super::supervision::Resources,
+    engine: &Engine,
+    client: &mut Client,
+    pending: &mut VecDeque<Value>,
+) -> Result<(), String> {
+    let resumed = resources
+        .game
+        .as_mut()
+        .map_or(Ok(()), |game| game.low_resource(false));
+    let identity = resources
+        .identity
+        .as_mut()
+        .map_or(Ok(()), |identity| identity.cancel_creation());
+    finish(resumed, identity, || close(engine, client, pending))
+}
+
 /// Resolve the current native state before leaving, even if the last roster expired.
 pub(super) fn close(
     engine: &Engine,
@@ -125,6 +159,25 @@ impl Shutdown {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn failed_render_resume_still_closes_and_preserves_every_cleanup_error() {
+        let mut closed = false;
+        let result = finish(
+            Err("Resume unconfirmed.".into()),
+            Err("Identity failed.".into()),
+            || {
+                closed = true;
+                Err("Lobby departure unconfirmed.".into())
+            },
+        );
+        assert!(closed);
+        assert_eq!(
+            result,
+            Err("Resume unconfirmed. Identity failed. Lobby departure unconfirmed.".into())
+        );
+        assert!(finish(Err("Resume unconfirmed.".into()), Ok(()), || Ok(())).is_err());
+        assert!(finish(Ok(()), Ok(()), || Ok(())).is_ok());
+    }
     fn roster(name: &str) -> Value {
         json!({"messageType":"GameLobbySetup","payload":{"isHost":true,"lobbyName":name,"mapData":{"mapPath":"map.w3x"},
             "players":[{"slot":0,"slotStatus":2,"slotType":0,"team":24,"isSelf":true,"isObserver":true,"teamChangeEnabled":true}]}})
@@ -132,6 +185,20 @@ mod tests {
 
     #[test]
     fn stale_roster_shutdown_refreshes_cancels_leaves_and_waits_for_ack() {
+        shutdown_roundtrip(None);
+    }
+
+    #[test]
+    fn stop_during_recovery_backoff_still_closes_the_retained_owned_lobby() {
+        shutdown_roundtrip(Some(crate::engine::Phase::Recovering(100)));
+    }
+
+    #[test]
+    fn stop_before_empty_refresh_leave_is_sent_still_departs() {
+        shutdown_roundtrip(Some(crate::engine::Phase::Leaving(100)));
+    }
+
+    fn shutdown_roundtrip(interrupted: Option<crate::engine::Phase>) {
         use crate::{config::Config, discovery::Endpoint};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -182,7 +249,23 @@ mod tests {
             json!({"messageType":"MultiplayerGameLeave"}),
             roster("Test #1"),
         ]);
-        close(&engine, &mut client, &mut pending).unwrap();
+        if let Some(phase) = interrupted {
+            let mut resources = super::super::supervision::Resources::default();
+            engine.phase = phase;
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(super::super::Control::Stop).unwrap();
+            assert!(!super::super::supervision::wait(
+                Duration::from_secs(10),
+                &rx,
+                &std::sync::atomic::AtomicBool::new(false),
+                &mut engine,
+                100,
+                &mut resources,
+            ));
+            stop(&mut resources, &engine, &mut client, &mut pending).unwrap();
+        } else {
+            close(&engine, &mut client, &mut pending).unwrap();
+        }
         server.join().unwrap();
     }
     #[test]

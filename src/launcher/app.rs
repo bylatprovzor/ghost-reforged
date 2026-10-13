@@ -50,6 +50,7 @@ pub enum Message {
     Command(ghost_reforged::commands::ChatCommand, bool),
     Welcome(bool),
     Rehost(bool),
+    Headless(bool),
     Private(bool),
     Speed(GameSpeed),
     RequireFull(bool),
@@ -150,6 +151,7 @@ pub struct App {
     pub notice_error: bool,
     pub logs: VecDeque<LogEntry>,
     pub preview: Preview,
+    pub(super) client_pid: Option<u32>,
     pub picking: bool,
     pub store: Option<Store>,
     pub game: GameState,
@@ -193,6 +195,7 @@ impl App {
             notice_error,
             logs: VecDeque::new(),
             preview: Preview::default(),
+            client_pid: None,
             picking: false,
             store,
             game: GameState::Checking,
@@ -313,7 +316,7 @@ impl App {
             }
             Message::Menu(menu) => self.motion.toggle_menu(menu),
             Message::DismissMenus => self.motion.close_menus(),
-            Message::OpenPreview => {
+            Message::OpenPreview if !self.form.profile.headless => {
                 self.preview.expand();
                 if self.preview.expanded {
                     self.motion.modal.target(1.0, Instant::now());
@@ -364,7 +367,7 @@ impl App {
             }
             Message::PollHost => {
                 self.poll_host();
-                if !self.hidden {
+                if !self.hidden && !self.form.profile.headless {
                     self.preview.poll();
                 }
                 if self.worker.is_none() && self.updates.ready.is_some() {
@@ -405,6 +408,15 @@ impl App {
                 self.apply_settings();
             }
             Message::Private(value) => self.form.profile.private_game = value,
+            Message::Headless(value) => {
+                self.form.profile.headless = value;
+                self.preview = Preview::default();
+                if !value {
+                    self.preview.target(self.client_pid);
+                }
+                self.motion.modal.target(0.0, Instant::now());
+                self.apply_settings();
+            }
             Message::Speed(value) => {
                 self.form.profile.speed = value;
                 self.motion.close_menus();
@@ -494,7 +506,8 @@ impl App {
                 }
                 self.probing = false;
                 if self.worker.is_none() {
-                    self.preview.target(game.pid);
+                    self.preview
+                        .target(game.pid.filter(|_| !self.form.profile.headless));
                     if self.game != game.state {
                         self.preview.request();
                     }

@@ -23,6 +23,8 @@ mod native {
         pid: u32,
         guard: Option<crate::background_window::Guard>,
         audio: Option<crate::background_audio::Guard>,
+        render: Option<crate::background_render::Guard>,
+        preview: Option<crate::window_capture::Suppression>,
         process: HANDLE,
     }
 
@@ -145,10 +147,13 @@ mod native {
                 pid,
                 guard: None,
                 audio: None,
+                render: None,
+                preview: None,
                 process,
             })
         }
         pub fn terminate(&mut self) -> Result<(), String> {
+            self.low_resource(false)?;
             // The retained handle identifies this client even if Windows reuses its PID.
             if unsafe { WaitForSingleObject(self.process, 0) } == 0 {
                 self.audio = None;
@@ -186,8 +191,47 @@ mod native {
             self.pid
         }
         pub fn reveal(&mut self) {
+            let _ = self.low_resource(false);
+            self.render = None;
+            self.preview = None;
             self.audio = None;
             self.guard = None;
+        }
+        pub fn low_resource(&mut self, enabled: bool) -> Result<(), String> {
+            let result = self.apply_low_resource(enabled);
+            if result.is_err() {
+                // Closing the pipe releases the guardian's lease even after a lost reply.
+                self.render = None;
+                self.preview = None;
+                if let Some(guard) = &self.guard {
+                    let _ = guard.minimize(false);
+                }
+            }
+            result
+        }
+        fn apply_low_resource(&mut self, enabled: bool) -> Result<(), String> {
+            if enabled {
+                self.hide()?;
+                if self.render.is_none() {
+                    self.render = Some(crate::background_render::Guard::start(self.pid)?);
+                }
+                if self.preview.is_none() {
+                    self.preview = Some(crate::window_capture::Suppression::new(self.pid));
+                }
+                if let Some(guard) = &self.guard {
+                    guard.minimize(true)?;
+                }
+            }
+            if let Some(render) = &mut self.render {
+                render.set_paused(enabled)?;
+            }
+            if !enabled {
+                if let Some(guard) = &self.guard {
+                    guard.minimize(false)?;
+                }
+                self.preview = None;
+            }
+            Ok(())
         }
         pub fn hide(&mut self) -> Result<(), String> {
             self.hide_until(
@@ -304,8 +348,23 @@ impl Background {
         Ok(())
     }
     pub fn reveal(&mut self) {}
+    pub fn low_resource(&mut self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
     pub fn terminate(&mut self) -> Result<(), String> {
         Err("Restarting Warcraft III requires Windows.".into())
+    }
+}
+
+/// Internal child-process entry point; call before initializing the launcher UI.
+pub fn render_guardian_entry() -> bool {
+    #[cfg(windows)]
+    {
+        crate::background_render::entry()
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 #[cfg(not(windows))]

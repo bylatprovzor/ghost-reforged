@@ -27,9 +27,13 @@ const SHELL: isize =
     (WS_EX_APPWINDOW | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT)
         as isize;
 const STOP: u32 = WM_APP + 37;
+const REFRESH: u32 = WM_APP + 38;
 const MARK: &[u16] = &[
     71, 72, 111, 115, 116, 46, 87, 105, 110, 100, 111, 119, 71, 117, 97, 114, 100, 0,
 ];
+
+#[path = "background_window_mode.rs"]
+mod mode;
 
 thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
 
@@ -41,6 +45,7 @@ pub(crate) struct Guard {
     worker: Option<thread::JoinHandle<()>>,
     stop: Arc<AtomicBool>,
     restore_visibility: Arc<AtomicBool>,
+    minimized: Arc<mode::Mode>,
 }
 
 struct Lease(HANDLE);
@@ -75,6 +80,8 @@ impl Guard {
         let stopping = stop.clone();
         let restore_visibility = Arc::new(AtomicBool::new(true));
         let restore = restore_visibility.clone();
+        let minimized = Arc::new(mode::Mode::default());
+        let minimize = minimized.clone();
         let worker = thread::Builder::new()
             .name("ghost-windows".into())
             .spawn(move || {
@@ -108,6 +115,7 @@ impl Guard {
                         windows: Vec::new(),
                         capture_owned: false,
                         restore_visibility: restore,
+                        minimized: minimize,
                     })
                 });
                 let hooks = unsafe {
@@ -163,7 +171,7 @@ impl Guard {
                     if message.message == STOP {
                         break;
                     }
-                    if message.message == WM_TIMER {
+                    if message.message == WM_TIMER || message.message == REFRESH {
                         let mut alive = false;
                         with_state(|state| {
                             alive = state.alive();
@@ -214,6 +222,7 @@ impl Guard {
                 worker: Some(worker),
                 stop,
                 restore_visibility,
+                minimized,
             }),
             result => {
                 stop.store(true, Ordering::SeqCst);
@@ -244,6 +253,26 @@ impl Guard {
     pub fn keep_hidden(&self) {
         self.restore_visibility.store(false, Ordering::SeqCst);
     }
+
+    pub fn minimize(&self, enabled: bool) -> Result<(), String> {
+        let ticket = self.minimized.request(enabled);
+        if !self.minimized.ready(ticket) {
+            unsafe {
+                PostThreadMessageW(self.thread_id, REFRESH, 0, 0);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !self.minimized.ready(ticket) {
+            self.check()?;
+            if Instant::now() >= deadline {
+                // The worker retains the latest request even if the game is hung.
+                // Never send LobbyStart on the strength of a queued window message.
+                return Err("The native window did not confirm its rendering mode.".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Guard {
@@ -266,6 +295,9 @@ struct Saved {
     enabled: bool,
     layered: Option<(u32, u8, u32)>,
     reveal: bool,
+    primary: bool,
+    iconic: bool,
+    minimized_by_guard: bool,
 }
 struct State {
     pid: u32,
@@ -274,6 +306,7 @@ struct State {
     windows: Vec<Saved>,
     capture_owned: bool,
     restore_visibility: Arc<AtomicBool>,
+    minimized: Arc<mode::Mode>,
 }
 
 fn with_state(f: impl FnOnce(&mut State)) {
@@ -356,6 +389,7 @@ impl State {
 
     fn scan_locked(&mut self) {
         if self.alive() {
+            let ticket = self.minimized.ticket();
             self.capture_owned = true;
             self.windows.retain(|saved| unsafe {
                 IsWindow(saved.window) != 0 && GetPropW(saved.window, MARK.as_ptr()) == self.cookie
@@ -364,6 +398,15 @@ impl State {
                 EnumWindows(Some(enumerate), self as *mut Self as LPARAM);
             }
             self.capture_owned = false;
+            let primary: Vec<_> = self.windows.iter().filter(|saved| saved.primary).collect();
+            if !primary.is_empty()
+                && primary.iter().all(|saved| unsafe {
+                    (IsIconic(saved.window) != 0) == (ticket & 1 != 0)
+                        && IsWindowVisible(saved.window) == 0
+                })
+            {
+                self.minimized.acknowledge(ticket);
+            }
         }
     }
 
@@ -398,6 +441,9 @@ impl State {
                 enabled: unsafe { IsWindowEnabled(window) } != 0,
                 layered: layered_attributes(window),
                 reveal: primary || unsafe { IsWindowVisible(window) } != 0,
+                primary,
+                iconic: unsafe { IsIconic(window) } != 0,
+                minimized_by_guard: false,
             });
         }
         // Persistent zero opacity survives ShowWindow while the worker or preview
@@ -433,6 +479,27 @@ impl State {
             Some(lock)
         };
         unsafe {
+            let saved = self
+                .windows
+                .iter_mut()
+                .find(|saved| saved.window == window)
+                .unwrap();
+            if saved.primary {
+                if self.minimized.enabled() {
+                    saved.minimized_by_guard = true;
+                    if IsIconic(window) == 0 {
+                        // Synchronous on this dedicated worker only. The controller's
+                        // wait is bounded; no delayed minimize may overtake a restore.
+                        ShowWindow(window, SW_SHOWMINNOACTIVE);
+                    }
+                } else if saved.minimized_by_guard {
+                    // Restore while the zero-opacity protection still applies. Loading
+                    // is not proven to progress while the native window is minimized.
+                    if IsIconic(window) != 0 {
+                        ShowWindow(window, SW_SHOWNOACTIVATE);
+                    }
+                }
+            }
             if IsWindowEnabled(window) != 0 {
                 EnableWindow(window, 0);
             }
@@ -462,7 +529,16 @@ impl Drop for State {
                     }
                     RemovePropW(saved.window, MARK.as_ptr());
                     if saved.reveal && self.restore_visibility.load(Ordering::SeqCst) {
-                        ShowWindowAsync(saved.window, SW_SHOWNA);
+                        ShowWindowAsync(
+                            saved.window,
+                            if saved.iconic {
+                                SW_SHOWMINNOACTIVE
+                            } else if saved.minimized_by_guard {
+                                SW_SHOWNOACTIVATE
+                            } else {
+                                SW_SHOWNA
+                            },
+                        );
                     }
                 }
             }

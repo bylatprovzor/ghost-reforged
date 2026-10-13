@@ -29,6 +29,11 @@ impl Preview {
     }
 
     pub fn needs_poll(&self) -> bool {
+        if self.target.is_some_and(window_capture::render_paused) {
+            return self.flight.is_some()
+                || self.pending.is_some()
+                || self.error.as_deref() != Some("Preview paused during low-resource hosting.");
+        }
         self.pending.is_some() || self.flight.is_some() || (self.expanded && self.target.is_some())
     }
 
@@ -53,6 +58,21 @@ impl Preview {
     }
 
     pub fn poll(&mut self) {
+        self.poll_with_pause(self.target.is_some_and(window_capture::render_paused));
+    }
+
+    fn poll_with_pause(&mut self, paused: bool) {
+        if paused {
+            // Keep one delayed request alive across the asynchronous mode switch.
+            // It cannot capture while suppressed and needs no new lobby event to resume.
+            self.request();
+            self.flight = None;
+            self.image = None;
+            self.updated = None;
+            self.expanded = false;
+            self.error = Some("Preview paused during low-resource hosting.".into());
+            return;
+        }
         if let Some(receiver) = &self.flight {
             match receiver.try_recv() {
                 Ok((epoch, result)) => {
@@ -125,6 +145,25 @@ impl Preview {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_preview_survives_render_resume_without_a_lobby_event() {
+        let mut preview = Preview::default();
+        preview.target(Some(123));
+        for _ in 0..3 {
+            preview.poll_with_pause(true);
+            assert!(preview.pending.is_some());
+            assert!(preview.flight.is_none());
+            assert!(preview.needs_poll());
+        }
+        // Test scheduling without capturing a real window or accessing the fake PID.
+        preview.pending = Some(Instant::now() + Duration::from_secs(1));
+        preview.poll_with_pause(false);
+        assert!(preview.pending.is_some());
+        assert!(preview.needs_poll());
+        preview.target(None);
+        assert!(!preview.needs_poll());
+    }
 
     #[test]
     fn a_frame_from_an_old_client_is_not_displayed_after_restart() {

@@ -29,12 +29,13 @@ try {
                 '--remap-path-prefix', "$root=/source/ghost-reforged", '-C', 'debuginfo=0',
                 '-C', 'target-feature=+crt-static', '-C', 'link-arg=/PDBALTPATH:ghost-reforged.pdb')
             $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]31
-            & $cargo build --locked --release --target $target --target-dir $buildRoot --bin ghost-reforged
+            & $cargo build --locked --release --target $target --target-dir $buildRoot --bin ghost-reforged --bin ghost-reforged-cli
             if ($LASTEXITCODE -ne 0) { throw 'Windows build failed.' }
         } finally { $env:CARGO_ENCODED_RUSTFLAGS = $previousFlags }
     }
     New-Item -ItemType Directory -Force -Path $package | Out-Null
     Copy-Item -LiteralPath (Join-Path $buildRoot "$target\release\ghost-reforged.exe") -Destination $package
+    Copy-Item -LiteralPath (Join-Path $buildRoot "$target\release\ghost-reforged-cli.exe") -Destination $package
     foreach ($file in @('README.md', 'LICENSE', 'NOTICE')) {
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $package
     }
@@ -51,6 +52,7 @@ try {
     $release = Join-Path $buildRoot "release-assets\$version"
     New-Item -ItemType Directory -Force -Path $release | Out-Null
     Copy-Item -LiteralPath (Join-Path $package 'ghost-reforged.exe') -Destination $release -Force
+    Copy-Item -LiteralPath (Join-Path $package 'ghost-reforged-cli.exe') -Destination $release -Force
     Copy-Item -LiteralPath $zip -Destination $release -Force
     foreach ($file in @('LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')) {
         Copy-Item -LiteralPath (Join-Path $package $file) -Destination $release -Force
@@ -70,7 +72,7 @@ try {
         } finally { $env:CARGO_ENCODED_RUSTFLAGS = $previousFlags }
         Copy-Item -LiteralPath (Join-Path $buildRoot "setup\$target\release\ghost-reforged-setup.exe") -Destination (Join-Path $release 'GHost-Reforged-Setup-x64.exe') -Force
     }
-    $assets = @('ghost-reforged.exe', [IO.Path]::GetFileName($zip), 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt', 'install.ps1')
+    $assets = @('ghost-reforged.exe', 'ghost-reforged-cli.exe', [IO.Path]::GetFileName($zip), 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt', 'install.ps1')
     if ($Setup) { $assets += 'GHost-Reforged-Setup-x64.exe' }
     $assets | Sort-Object | ForEach-Object {
         $digest = (Get-FileHash -LiteralPath (Join-Path $release $_) -Algorithm SHA256).Hash.ToLowerInvariant()

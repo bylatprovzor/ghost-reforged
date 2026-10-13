@@ -17,6 +17,10 @@ name = "ghost-reforged"
 path = "src/launcher/main.rs"
 required-features = ["launcher"]
 
+[[bin]]
+name = "ghost-reforged-cli"
+path = "src/console/main.rs"
+
 [dependencies]
 clap = { version = "4.6", features = ["derive"] }
 memchr = "2.7"
@@ -33,8 +37,10 @@ ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 getrandom = "0.3"
 
 [target.'cfg(windows)'.dependencies]
+interprocess = "2.4.5"
 sha2 = "0.10"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_UI_Accessibility", "Win32_Storage_Xps"] }
+widestring = "1.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_Com", "Win32_Graphics_Gdi", "Win32_UI_Accessibility", "Win32_Storage_Xps", "Win32_Storage_FileSystem"] }
 
 [build-dependencies]
 cc = "1.7"

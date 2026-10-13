@@ -4,6 +4,7 @@ enum Step {
     Continue,
     Reconnect,
     Stop,
+    Shutdown(Result<(), String>),
 }
 
 pub(super) fn run(
@@ -76,8 +77,11 @@ pub(super) fn run(
             let now = started.elapsed().as_secs();
             let control = deferred_controls.pop_front().or_else(|| rx.try_recv().ok());
             if stop.load(Ordering::SeqCst) || matches!(control, Some(Control::Stop)) {
-                identity.cancel_creation()?;
-                return shutdown::close(&engine, &mut client, &mut pending).map(|()| Step::Stop);
+                let resumed = game.low_resource(false);
+                let restored = identity.cancel_creation();
+                return Ok(Step::Shutdown(shutdown::finish(resumed, restored, || {
+                    shutdown::close(&engine, &mut client, &mut pending)
+                })));
             }
             if let Some(Control::Settings(settings)) = &control {
                 chat.apply_settings(&settings.commands);
@@ -265,7 +269,11 @@ pub(super) fn run(
             publish_lobby(&engine, identity_ok, now, &mut snapshot, tx);
             if repair_lobby || engine.phase == Phase::Restarting {
                 if stop.load(Ordering::SeqCst) {
-                    return Ok(Step::Stop);
+                    let resumed = game.low_resource(false);
+                    let restored = identity.cancel_creation();
+                    return Ok(Step::Shutdown(shutdown::finish(resumed, restored, || {
+                        shutdown::close(&engine, &mut client, &mut pending)
+                    })));
                 }
                 status(
                     tx,
@@ -295,6 +303,9 @@ pub(super) fn run(
                 }
                 return Ok(Step::Reconnect);
             }
+            // Resume is acknowledged before LobbyStart (manual, chat or automatic),
+            // creation, departure, or any loading/recovery transition can proceed.
+            game.low_resource(render::pause_browser(&engine, identity_ok, now))?;
             for command in commands {
                 if command.message == "CreateLobby" {
                     ladder_seed.reset();
@@ -318,9 +329,11 @@ pub(super) fn run(
                     if command.message == "CreateLobby" {
                         return Ok(Step::Stop);
                     }
-                    identity.cancel_creation()?;
-                    return shutdown::close(&engine, &mut client, &mut pending)
-                        .map(|()| Step::Stop);
+                    let resumed = game.low_resource(false);
+                    let restored = identity.cancel_creation();
+                    return Ok(Step::Shutdown(shutdown::finish(resumed, restored, || {
+                        shutdown::close(&engine, &mut client, &mut pending)
+                    })));
                 }
                 if command.message == "CreateLobby"
                     && let Err(error) = identity.begin_creation()
@@ -391,13 +404,19 @@ pub(super) fn run(
         });
         match step {
             Ok(Step::Stop) => return Ok(()),
+            Ok(Step::Shutdown(result)) => return result,
             Ok(Step::Continue) => continue,
             Ok(Step::Reconnect) => {
                 resources.clear_dead();
             }
             Err(error) => {
+                if let Some(game) = resources.game.as_mut() {
+                    let _ = game.low_resource(false);
+                }
                 if stop.load(Ordering::SeqCst) {
-                    return Ok(());
+                    return shutdown::finish(Err(error), Ok(()), || {
+                        shutdown::stop(&mut resources, &engine, &mut client, &mut pending)
+                    });
                 }
                 if let Some(identity) = resources.identity.as_mut() {
                     let _ = identity.cancel_creation();
@@ -416,7 +435,7 @@ pub(super) fn run(
                     started.elapsed().as_secs(),
                     &mut resources,
                 ) {
-                    return Ok(());
+                    return shutdown::stop(&mut resources, &engine, &mut client, &mut pending);
                 }
             }
         }
@@ -444,7 +463,7 @@ pub(super) fn run(
             &mut retry,
         )?
         else {
-            return Ok(());
+            return shutdown::stop(&mut resources, &engine, &mut client, &mut pending);
         };
         if connection.initialization_required {
             engine.expect_client_initialization();

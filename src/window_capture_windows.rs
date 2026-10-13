@@ -59,6 +59,10 @@ struct RenderWindow {
 
 impl RenderWindow {
     fn open(pid: u32) -> Result<Self, String> {
+        // Recheck under the capture lock: an already queued preview must not wake rendering.
+        if super::render_paused(pid) {
+            return Err("Preview paused during low-resource hosting.".into());
+        }
         let process = Process(unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,

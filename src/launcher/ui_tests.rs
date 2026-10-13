@@ -291,6 +291,42 @@ fn host_remains_clickable_at_the_minimum_window_size() {
 }
 
 #[test]
+fn headless_hides_the_preview_and_can_return_to_normal_without_restarting() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = App::new(directory.path(), None);
+    let mut harness = Harness::new();
+    app.preview.image = Some(super::art::backdrop());
+    harness.settle(&mut app);
+    harness.frame(&app, None, false, "mode-normal");
+    let _ = app.update(Message::Headless(true));
+    harness.settle(&mut app);
+    assert!(app.form.profile.headless);
+    assert!(app.preview.image.is_none());
+    assert!(!app.preview.needs_poll());
+    // Even a late/stale image may not open a headless preview.
+    app.preview.image = Some(super::art::backdrop());
+    let _ = app.update(Message::OpenPreview);
+    assert!(!app.preview.expanded);
+    harness.frame(&app, None, false, "mode-headless");
+    harness.size = Size::new(1000.0, 720.0);
+    let messages = harness.frame(
+        &app,
+        Some(Point::new(300.0, 595.0)),
+        true,
+        "mode-headless-small",
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, Message::Host))
+    );
+    let _ = app.update(Message::Headless(false));
+    app.preview.image = Some(super::art::backdrop());
+    let _ = app.update(Message::OpenPreview);
+    assert!(app.preview.expanded);
+}
+
+#[test]
 fn occupied_player_rows_send_the_displayed_identity_when_kicked() {
     use ghost_reforged::hosting::{Slot, Snapshot};
     let directory = tempfile::tempdir().unwrap();

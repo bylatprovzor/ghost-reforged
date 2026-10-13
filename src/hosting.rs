@@ -6,6 +6,7 @@ mod connection;
 mod controller;
 mod kick;
 mod ladder;
+mod render;
 mod repair;
 pub use kick::KickRequest;
 mod slots;

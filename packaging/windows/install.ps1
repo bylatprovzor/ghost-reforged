@@ -6,14 +6,15 @@ if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
 }
 $destination = [IO.Path]::GetFullPath($InstallDirectory)
 $executable = Join-Path $destination 'ghost-reforged.exe'
-$files = @('ghost-reforged.exe', 'README.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')
+$files = @('ghost-reforged.exe', 'ghost-reforged-cli.exe', 'README.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')
 foreach ($file in $files) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $file) -PathType Leaf)) {
         throw 'Extract the complete Windows ZIP before installing.'
     }
 }
-if (@(Get-Process -Name 'ghost-reforged' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -and [IO.Path]::GetFullPath($_.Path) -ieq $executable }).Count) {
+$programsToReplace = @($executable, (Join-Path $destination 'ghost-reforged-cli.exe'))
+if (@(Get-Process -Name 'ghost-reforged','ghost-reforged-cli' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and [IO.Path]::GetFullPath($_.Path) -iin $programsToReplace }).Count) {
     throw 'Close GHost Reforged before updating it.'
 }
 New-Item -ItemType Directory -Force -Path $destination | Out-Null

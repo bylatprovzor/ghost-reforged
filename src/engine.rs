@@ -92,6 +92,7 @@ impl Engine {
                 | Phase::Lobby
                 | Phase::Countdown(_)
                 | Phase::Starting(_)
+                | Phase::Leaving(_)
                 | Phase::Recovering(_)
         )
         .then(|| {

@@ -3,6 +3,7 @@ use crate::{commands::CommandSettings, engine::Engine, welcome::Welcome};
 /// Settings that the controller can change without replacing the current lobby.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiveSettings {
+    pub headless: bool,
     pub minimum: u8,
     pub full: bool,
     pub rehost: bool,
@@ -25,6 +26,7 @@ impl LiveSettings {
 
     pub(super) fn apply(&self, engine: &mut Engine, now: u64) -> Result<(), String> {
         self.validate()?;
+        engine.config.headless = self.headless;
         engine.update_start_rule(self.minimum, self.full);
         engine.update_rehost(self.rehost, self.rehost_delay, now);
         engine.config.empty_rehost_seconds = self.empty_refresh;

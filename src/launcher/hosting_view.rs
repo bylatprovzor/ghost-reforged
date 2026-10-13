@@ -10,7 +10,7 @@ use super::{
 };
 use iced::{
     Alignment, Element, Fill, Length,
-    widget::{column, container, row, scrollable, space, text},
+    widget::{checkbox, column, container, row, scrollable, space, text},
 };
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -126,7 +126,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .spacing(24),
     ]
     .spacing(12);
-    let mut footer = column![controls].spacing(9);
+    let mut footer = column![
+        controls,
+        checkbox(app.form.profile.headless)
+            .label("Headless (VPS, no game preview)")
+            .on_toggle(Message::Headless)
+    ]
+    .spacing(9);
     if !app.notice.is_empty() {
         footer = footer.push(text(&app.notice).size(14).color(if app.notice_error {
             p::ERROR
@@ -168,9 +174,13 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Fill)
         .style(p::panel),
     );
+    let mut right = column![lobby(app)];
+    if !app.form.profile.headless {
+        right = right.push(super::preview_view::thumbnail(app));
+    }
     row![
         container(left).width(Length::FillPortion(3)).height(Fill),
-        column![lobby(app), super::preview_view::thumbnail(app)]
+        right
             .spacing(super::backdrop_view::PREVIEW_GAP)
             .height(Fill)
             .width(Length::FillPortion(2))
