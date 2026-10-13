@@ -14,6 +14,47 @@ mod lifecycle;
 mod recovery;
 mod session;
 
+#[test]
+fn ranked_lobby_names_use_the_real_counter_and_never_send_an_oversized_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let map = dir.path().join("test.w3x");
+    std::fs::write(&map, []).unwrap();
+    let mut settings = Config {
+        maps: vec![map],
+        lobby_name: "[RANKED] Survival Chaos #{n}".into(),
+        host_mode: HostMode::Player,
+        ..Config::default()
+    };
+    assert!(settings.validate().is_ok());
+    let profile = crate::profile::Profile {
+        lobby_pattern: settings.lobby_name.clone(),
+        ..Default::default()
+    };
+    assert!(profile.validate().is_ok());
+    let mut engine = Engine::new(settings.clone());
+    engine.on_event(&event("GameList", json!({})), 0);
+    let command = engine.on_event(
+        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        0,
+    );
+    assert_eq!(command[0].message, "CreateLobby");
+    assert_eq!(engine.config.name(1), "[RANKED] Survival Chaos #1");
+    settings.first_number = 100_000_000;
+    assert!(settings.validate().is_err());
+    // Even an unchecked/recovered engine must stop before sending this name.
+    let mut engine = Engine::new(settings);
+    engine.on_event(&event("GameList", json!({})), 0);
+    assert!(
+        engine
+            .on_event(
+                &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+                0
+            )
+            .is_empty()
+    );
+    assert!(matches!(engine.phase, Phase::Stopped(_)));
+}
+
 fn config() -> Config {
     Config {
         maps: vec![

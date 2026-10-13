@@ -200,7 +200,7 @@ impl Config {
         }
         if self.lobby_name.trim().is_empty()
             || self.lobby_name.contains(['\r', '\n', '\0'])
-            || self.lobby_name.replace("{n}", "4294967295").len() > 31
+            || self.name(self.first_number).len() > 31
         {
             return invalid("lobby_name must be 1..31 UTF-8 bytes including the expanded {n}");
         }

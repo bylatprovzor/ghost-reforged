@@ -123,7 +123,7 @@ fn failed_save_does_not_replace_the_in_memory_profile() {
 fn invalid_profiles_cannot_be_persisted() {
     let dir = tempfile::tempdir().unwrap();
     let (store, mut profiles) = Store::open(dir.path()).unwrap();
-    profiles.items[0].lobby_pattern = "\u{e9}".repeat(11) + "{n}";
+    profiles.items[0].lobby_pattern = "\u{e9}".repeat(16) + "{n}";
     assert!(store.save(&profiles).is_err());
     profiles.items[0].lobby_pattern = "SC #{n}".into();
     profiles.selected = 10;

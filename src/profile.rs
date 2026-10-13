@@ -154,7 +154,7 @@ impl Profile {
             return Err("Profile names must contain 1 to 60 characters.".into());
         }
         if !self.lobby_pattern.contains("{n}")
-            || self.lobby_pattern.replace("{n}", "4294967295").len() > 31
+            || self.lobby_name(self.next_number).len() > 31
             || self.lobby_pattern.chars().any(char::is_control)
             || self.lobby_pattern.replace("{n}", "").contains(['{', '}'])
         {

@@ -387,6 +387,10 @@ impl Engine {
     }
 
     fn create(&mut self, now: u64) -> Vec<Command> {
+        if self.config.name(self.number).len() > 31 {
+            self.stop("Game name exceeds 31 UTF-8 bytes at this lobby number");
+            return Vec::new();
+        }
         self.phase = Phase::Creating(now);
         self.creation = protocol::CreationEvidence::default();
         vec![protocol::create_lobby(
