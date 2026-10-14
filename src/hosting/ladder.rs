@@ -1,7 +1,7 @@
 //! Prepare one coherent four-player snapshot before any start path is enabled.
 use crate::{
     engine::{Engine, Phase},
-    ladder::{self, Packet, Profile},
+    ladder::{self, Packet},
     protocol::{Command, Lobby, Player},
 };
 use serde_json::json;
@@ -33,7 +33,6 @@ pub(super) struct Seed {
     stage: Stage,
     job: Option<Job>,
     packet: Option<Packet>,
-    profiles: Option<[Profile; 4]>,
     sequence: u64,
     awaiting: Option<(u64, u64)>,
     written: bool,
@@ -271,7 +270,6 @@ impl Seed {
             self.key = key;
             self.stage = Stage::Normalize;
             self.packet = None;
-            self.profiles = None;
             self.awaiting = None;
             self.replies.clear();
             self.written = false;
@@ -298,7 +296,6 @@ impl Seed {
             self.began = now;
             self.stage = Stage::Fetch;
             self.packet = None;
-            self.profiles = None;
             self.replies.clear();
         } else if self.stage == Stage::Ready && !self.snapshot_ready(lobby) {
             self.began = now;
@@ -339,7 +336,6 @@ impl Seed {
                             match result {
                                 Ok(prepared) => {
                                     self.expires_at = prepared.expires_at;
-                                    self.profiles = Some(prepared.profiles);
                                     self.packet = Some(prepared.packet);
                                     self.stage = Stage::Write(0);
                                 }
@@ -445,13 +441,7 @@ impl Seed {
                     }
                     .into(),
                 );
-                self.replies.extend(
-                    self.profiles
-                        .as_ref()
-                        .unwrap()
-                        .iter()
-                        .map(Profile::announcement),
-                );
+                // Player statistics belong to the join welcome and ?stats.
                 Vec::new()
             }
             Stage::Ready | Stage::Unavailable if now >= self.reply_at => {

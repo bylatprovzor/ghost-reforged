@@ -1,4 +1,5 @@
 use super::*;
+use crate::ladder::Profile;
 use serde_json::Value;
 
 fn fixture() -> (Engine, Value) {
@@ -128,7 +129,10 @@ fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
     for now in 1..250 {
         receive(&mut seed, &mut engine, &payload, now);
         if seed.ready(&serde_json::from_value(payload.clone()).unwrap()) {
-            assert_eq!(messages.len(), 4, "all four chat lines must precede start");
+            assert!(
+                messages.is_empty(),
+                "seeding must not repeat player statistics in chat"
+            );
             return (seed, engine, payload, messages, now);
         }
         assert!(!engine.can_start(now));
@@ -140,10 +144,10 @@ fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
 }
 
 #[test]
-fn seeding_survives_row_reordering_and_announces_every_profile_before_start() {
+fn seeding_survives_row_reordering_without_repeating_welcome_statistics() {
     let (seed, mut engine, payload, messages, now) = prepared();
     assert!(seed.ready(&serde_json::from_value(payload).unwrap()));
-    assert_eq!(messages[0], "Player0#1234: Wins: 258, Loss: 42, Rank: #3");
+    assert!(messages.is_empty());
     assert_eq!(engine.start_now(now)[0].message, "LobbyStart");
 }
 
@@ -307,7 +311,10 @@ fn changing_a_packet_after_a_long_wait_gets_a_fresh_repair_deadline() {
         apply(&mut payload, commands, &mut messages);
         assert!(seed.stage != Stage::Unavailable);
         if seed.ready(&serde_json::from_value(payload.clone()).unwrap()) {
-            assert_eq!(messages.len(), 4);
+            assert!(
+                messages.is_empty(),
+                "repair must not repeat player statistics"
+            );
             return;
         }
     }
