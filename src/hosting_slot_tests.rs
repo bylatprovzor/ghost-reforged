@@ -104,3 +104,57 @@ fn a_join_or_countdown_invalidates_a_queued_computer_request() {
         assert!(activity.unwrap().ends_with("not applied"));
     }
 }
+
+#[test]
+fn automatic_observer_closure_preserves_players_host_and_occupied_seats() {
+    for (status, observer, permitted, should_close) in [
+        (0, true, true, true),
+        (0, false, true, false),
+        (1, true, true, false),
+        (2, true, true, false),
+        (0, true, false, false),
+    ] {
+        let mut engine = ready(false);
+        let mut setup = roster(status, observer);
+        setup["payload"]["players"][1]["slotTypeChangeEnabled"] = json!(permitted);
+        engine.on_event(&setup, 1);
+        let mut pending = slots::PendingSlot::default();
+        pending.close_empty_observer(&engine, 1);
+        let query = pending.advance(&engine, 1, false, true, true).0;
+        assert_eq!(!query.is_empty(), should_close);
+        pending.advance(&engine, 2, true, false, true);
+        let commands = pending.advance(&engine, 2, false, true, true).0;
+        if should_close {
+            assert_eq!(commands[0].message, "CloseSlot");
+            assert_eq!(commands[0].payload, json!({"slot":1}));
+            setup["payload"]["players"][1]["slotStatus"] = json!(1);
+            engine.on_event(&setup, 3);
+            pending.advance(&engine, 3, true, false, true);
+            pending.close_empty_observer(&engine, 3);
+            assert!(pending.advance(&engine, 3, false, true, true).0.is_empty());
+        } else {
+            assert!(commands.is_empty());
+        }
+    }
+}
+
+#[test]
+fn automatic_observer_closure_requires_identity_and_cancels_if_a_player_joins() {
+    let mut engine = ready(false);
+    engine.on_event(&roster(0, true), 1);
+    let mut pending = slots::PendingSlot::default();
+    pending.close_empty_observer(&engine, 1);
+    assert!(pending.advance(&engine, 1, false, true, false).0.is_empty());
+    assert_eq!(
+        pending.advance(&engine, 1, false, true, true).0[0].message,
+        "SendGameLobbySetup"
+    );
+    engine.on_event(&roster(2, true), 2);
+    let (commands, activity) = pending.advance(&engine, 2, true, false, true);
+    assert!(commands.is_empty());
+    assert!(activity.unwrap().ends_with("not applied"));
+    engine.on_event(&roster(0, true), 3);
+    engine.phase = Phase::Countdown(5);
+    pending.close_empty_observer(&engine, 3);
+    assert!(pending.advance(&engine, 3, false, true, true).0.is_empty());
+}

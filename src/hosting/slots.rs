@@ -131,6 +131,26 @@ pub(super) struct PendingSlot {
 }
 
 impl PendingSlot {
+    pub fn close_empty_observer(&mut self, engine: &Engine, now: u64) {
+        if self.request.is_some() || engine.phase != Phase::Lobby {
+            return;
+        }
+        let Some(lobby) = engine.owned_lobby(now) else {
+            return;
+        };
+        let snapshot = super::summarize(lobby, false, true);
+        let request = snapshot
+            .slots
+            .iter()
+            .filter(|slot| slot.observer && !slot.own && slot.status == 0)
+            .flat_map(|slot| snapshot.slot_actions(slot.number))
+            .find(|(action, _)| *action == SlotAction::Close);
+        if let Some((_, request)) = request {
+            // Recheck the empty slot against a fresh roster before closing it.
+            self.request(request, engine, now);
+        }
+    }
+
     pub fn request(&mut self, request: SlotRequest, engine: &Engine, now: u64) {
         if self.request.is_none()
             && engine.phase == Phase::Lobby

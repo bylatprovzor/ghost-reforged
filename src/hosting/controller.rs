@@ -179,6 +179,9 @@ pub(super) fn run(
             if let Some(Control::EditSlot(request)) = &control {
                 slot_edit.request(request.clone(), &engine, now);
             }
+            if identity_ok && event.is_none() {
+                slot_edit.close_empty_observer(&engine, now);
+            }
             let (slot_commands, line) = slot_edit.advance(
                 &engine,
                 now,
