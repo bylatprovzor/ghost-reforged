@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 pub struct Prepared {
+    pub match_id: Option<String>,
     pub profiles: [Profile; 4],
     pub packet: Packet,
     pub expires_at: Option<u64>,
@@ -12,6 +13,7 @@ impl Prepared {
     pub fn preview(profiles: [Profile; 4]) -> Result<Self, Error> {
         let packet = Packet::encode(&profiles)?;
         Ok(Self {
+            match_id: None,
             profiles,
             packet,
             expires_at: None,
@@ -27,6 +29,7 @@ pub fn prepare(tags: &[String; 4], regions: &[Region; 4]) -> Result<Prepared, Er
         let profiles = super::fetch(tags)?;
         let packet = Packet::encode_preview_regions(&profiles, regions)?;
         return Ok(Prepared {
+            match_id: None,
             profiles,
             packet,
             expires_at: None,
@@ -140,6 +143,7 @@ fn validate(
     let profiles = super::api::validate(&data.to_string(), tags)?;
     let packet = Packet::encode_session_regions(&profiles, &ticket, regions)?;
     Ok(Prepared {
+        match_id: Some(match_id.to_owned()),
         profiles,
         packet,
         expires_at: data["expires_at"].as_u64(),

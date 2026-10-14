@@ -21,6 +21,7 @@ pub(super) fn run(
     let mut resources = supervision::Resources::default();
     let mut retry = supervision::Retry::default();
     let mut engine = Engine::new(config);
+    let mut reporter = reporting::Reporter::open(&engine.config)?;
     let started = Instant::now();
     let mut reserved = None;
     let Some(connection) = supervision::connect(
@@ -75,6 +76,11 @@ pub(super) fn run(
                 .watch(stop, Instant::now() + Duration::from_secs(2))?;
             identity.check_timeout()?;
             let now = started.elapsed().as_secs();
+            if let Some(reporter) = &reporter {
+                while let Some(notice) = reporter.notice() {
+                    let _ = tx.send(Event::Activity(Activity::Command(notice)));
+                }
+            }
             let control = deferred_controls.pop_front().or_else(|| rx.try_recv().ok());
             if stop.load(Ordering::SeqCst) || matches!(control, Some(Control::Stop)) {
                 let resumed = game.low_resource(false);
@@ -155,6 +161,12 @@ pub(super) fn run(
             commands.extend(ladder_seed.advance(&engine, now, event.is_none(), identity_ok));
             if let Some(lobby) = engine.owned_lobby(now) {
                 engine.set_ladder_ready(ladder_seed.ready(lobby));
+            }
+            if identity_ok
+                && let Some(lobby) = engine.owned_lobby(now)
+                && let Some(reporter) = &mut reporter
+            {
+                reporter.observe(lobby, engine.number(), ladder_seed.confirmed_match(lobby));
             }
             if let Some(notice) = ladder_seed.notice() {
                 let _ = tx.send(Event::Activity(Activity::Command(notice)));
@@ -252,6 +264,11 @@ pub(super) fn run(
                     .is_some_and(|event| event["messageType"] == "GameLobbySetup"),
             ) {
                 if let Activity::GameStarted(name) = &event {
+                    if let Some(reporter) = &mut reporter
+                        && let Err(error) = reporter.started(name)
+                    {
+                        let _ = tx.send(Event::Activity(Activity::Command(error)));
+                    }
                     chat.started(name);
                 }
                 track_announcement(&event, &mut announcements);
@@ -311,6 +328,9 @@ pub(super) fn run(
             game.low_resource(render::pause_browser(&engine, identity_ok, now))?;
             for command in commands {
                 if command.message == "CreateLobby" {
+                    if let Some(reporter) = &mut reporter {
+                        reporter.clear();
+                    }
                     ladder_seed.reset();
                     engine.set_ladder_ready(false);
                     identity_ok = false;

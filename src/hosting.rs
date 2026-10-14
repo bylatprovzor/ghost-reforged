@@ -8,6 +8,7 @@ mod kick;
 mod ladder;
 mod render;
 mod repair;
+mod reporting;
 pub use kick::KickRequest;
 mod slots;
 pub use slots::{SlotAction, SlotRequest};

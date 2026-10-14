@@ -117,6 +117,7 @@ fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
     tx.send(if session {
         Packet::encode_session_regions(&profiles, "0123456789abcde", &[ladder::Region::Europe; 4])
             .map(|packet| ladder::Prepared {
+                match_id: Some("fixture-session-001".into()),
                 profiles,
                 packet,
                 expires_at: Some(4102444800),

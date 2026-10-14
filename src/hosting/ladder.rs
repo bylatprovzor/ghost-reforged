@@ -29,6 +29,7 @@ struct Job {
 
 #[derive(Default)]
 pub(super) struct Seed {
+    match_id: Option<String>,
     key: String,
     stage: Stage,
     job: Option<Job>,
@@ -132,6 +133,12 @@ impl Seed {
         self.replies.is_empty() && self.snapshot_ready(lobby)
     }
 
+    pub(super) fn confirmed_match(&self, lobby: &Lobby) -> Option<&str> {
+        (self.stage == Stage::Ready && self.snapshot_ready(lobby))
+            .then_some(self.match_id.as_deref())
+            .flatten()
+    }
+
     fn snapshot_ready(&self, lobby: &Lobby) -> bool {
         if !ladder::matches_map(&lobby.map_data.map_name) {
             return true;
@@ -194,6 +201,7 @@ impl Seed {
     }
 
     fn fail(&mut self, reason: impl ToString) {
+        self.match_id = None;
         self.stage = Stage::Unavailable;
         self.packet = None;
         self.awaiting = None;
@@ -266,6 +274,7 @@ impl Seed {
             return Vec::new();
         };
         if key != self.key {
+            self.match_id = None;
             self.began = now;
             self.key = key;
             self.stage = Stage::Normalize;
@@ -335,6 +344,7 @@ impl Seed {
                             }
                             match result {
                                 Ok(prepared) => {
+                                    self.match_id = prepared.match_id;
                                     self.expires_at = prepared.expires_at;
                                     self.packet = Some(prepared.packet);
                                     self.stage = Stage::Write(0);
