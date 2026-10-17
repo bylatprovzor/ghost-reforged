@@ -24,10 +24,26 @@ impl Prepared {
 // Only the host machine needs this credential. Never write it into the map,
 // lobby, application logs, or a serialized user configuration.
 pub fn prepare(tags: &[String; 4], regions: &[Region; 4]) -> Result<Prepared, Error> {
+    prepare_for_map(tags, regions, super::MAP_NAME)
+}
+
+pub fn prepare_for_map(
+    tags: &[String; 4],
+    regions: &[Region; 4],
+    map_name: &str,
+) -> Result<Prepared, Error> {
+    if !super::matches_map(map_name) {
+        return Err(Error::InvalidRoster);
+    }
+    let mmr = super::uses_mmr_packet(map_name);
     let mode = std::env::var("W3LADDER_MODE").unwrap_or_else(|_| "ranked".into());
     if mode == "preview" {
-        let profiles = super::fetch(tags)?;
-        let packet = Packet::encode_preview_regions(&profiles, regions)?;
+        let profiles = super::api::fetch_for(tags, mmr)?;
+        let packet = if mmr {
+            Packet::encode_mmr(&profiles, None, regions)?
+        } else {
+            Packet::encode_preview_regions(&profiles, regions)?
+        };
         return Ok(Prepared {
             match_id: None,
             profiles,
@@ -52,9 +68,12 @@ pub fn prepare(tags: &[String; 4], regions: &[Region; 4]) -> Result<Prepared, Er
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| Error::Unavailable)?;
     let match_id: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let payload = json!({"match_id":match_id,"map_name":super::MAP_NAME,
-        "map_version":"1.59","mode":mode,"players":tags.iter().enumerate()
+    let mut payload = json!({"match_id":match_id,"map_name":if mmr { super::MAP_NAME } else { super::LEGACY_MAP_NAME },
+        "map_version":if mmr { "1.59a" } else { "1.59" },"mode":mode,"players":tags.iter().enumerate()
             .map(|(slot,tag)| json!({"slot":slot,"battletag":tag})).collect::<Vec<_>>()});
+    if mmr {
+        payload["packet_version"] = json!(4);
+    }
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(8)))
         .max_redirects(0)
@@ -72,7 +91,11 @@ pub fn prepare(tags: &[String; 4], regions: &[Region; 4]) -> Result<Prepared, Er
         .limit(16 * 1024)
         .read_to_string()
         .map_err(|_| Error::Unavailable)?;
-    validate(&body, tags, &match_id, regions)
+    let prepared = validate(&body, tags, &match_id, regions)?;
+    if (prepared.packet.handicaps[0] == 44) != mmr {
+        return Err(Error::InvalidRoster);
+    }
+    Ok(prepared)
 }
 
 #[cfg(test)]
@@ -84,7 +107,7 @@ mod tests {
         assert_eq!(std::env::var("W3LADDER_MODE").as_deref(), Ok("test"));
         let tags = std::array::from_fn(|i| format!("LadderRelayTest{i}#900001"));
         let prepared = prepare(&tags, &[Region::Europe; 4]).unwrap();
-        assert_eq!(prepared.packet.handicaps[0], 46);
+        assert_eq!(prepared.packet.handicaps[0], 44);
         assert!(prepared.expires_at.is_some());
         assert!(
             prepared
@@ -122,7 +145,8 @@ fn validate(
     regions: &[Region; 4],
 ) -> Result<Prepared, Error> {
     let mut data: Value = serde_json::from_str(body).map_err(|_| Error::InvalidRoster)?;
-    if data["version"] != 2 || data["match_id"] != match_id {
+    let mmr = data["version"] == 3;
+    if (!mmr && data["version"] != 2) || data["match_id"] != match_id {
         return Err(Error::InvalidRoster);
     }
     let now = std::time::SystemTime::now()
@@ -139,9 +163,13 @@ fn validate(
         .as_str()
         .ok_or(Error::InvalidRoster)?
         .to_owned();
-    data["version"] = json!(1);
+    data["version"] = json!(if mmr { 2 } else { 1 });
     let profiles = super::api::validate(&data.to_string(), tags)?;
-    let packet = Packet::encode_session_regions(&profiles, &ticket, regions)?;
+    let packet = if mmr {
+        Packet::encode_mmr(&profiles, Some(&ticket), regions)?
+    } else {
+        Packet::encode_session_regions(&profiles, &ticket, regions)?
+    };
     Ok(Prepared {
         match_id: Some(match_id.to_owned()),
         profiles,

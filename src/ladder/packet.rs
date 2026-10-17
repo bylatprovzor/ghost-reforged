@@ -43,7 +43,7 @@ impl Packet {
         ))
     }
 
-    fn with_regions(digits: [u32; 12], regions: &[Region; 4], marker: u8) -> Self {
+    pub(super) fn with_regions(digits: [u32; 12], regions: &[Region; 4], marker: u8) -> Self {
         // V3 keeps the full body capacity. Marker 46 includes a result ticket;
         // marker 45 is a preview using the original fixed-width profile body.
         // the other three base-100 fields hold 625 region combinations and
@@ -172,6 +172,8 @@ mod tests {
             slot: i as u8,
             battletag: format!("Player{i}#1234"),
             rank: Some(255),
+            mmr: None,
+            mmr_games: None,
             wins: 511,
             losses: 127,
         });
@@ -226,6 +228,8 @@ mod tests {
             slot: i as u8,
             battletag: format!("Player{i}#1234"),
             rank: (profiles[i].0 != 0).then_some(profiles[i].0),
+            mmr: None,
+            mmr_games: None,
             wins: profiles[i].1,
             losses: profiles[i].2,
         });
@@ -285,6 +289,8 @@ mod tests {
             wins: 4095,
             losses: 4095,
             rank: Some(262143),
+            mmr: None,
+            mmr_games: None,
         });
         let packet = Packet::encode(&profiles).unwrap();
         let preview = Packet::encode_preview_regions(&profiles, &[Region::China; 4]).unwrap();

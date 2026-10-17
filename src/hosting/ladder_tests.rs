@@ -88,6 +88,10 @@ fn prepared() -> (Seed, Engine, Value, Vec<String>, u64) {
 }
 
 fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
+    prepared_wire(session, false)
+}
+
+fn prepared_wire(session: bool, mmr: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
     let (mut engine, mut payload) = fixture();
     if session {
         for row in payload["players"]
@@ -113,15 +117,29 @@ fn prepared_version(session: bool) -> (Seed, Engine, Value, Vec<String>, u64) {
         wins: 258,
         losses: 42,
         rank: Some(3),
+        mmr: mmr.then_some(1500),
+        mmr_games: mmr.then_some(10),
     });
     tx.send(if session {
-        Packet::encode_session_regions(&profiles, "0123456789abcde", &[ladder::Region::Europe; 4])
-            .map(|packet| ladder::Prepared {
-                match_id: Some("fixture-session-001".into()),
-                profiles,
-                packet,
-                expires_at: Some(4102444800),
-            })
+        (if mmr {
+            Packet::encode_mmr(
+                &profiles,
+                Some("0123456789abcde"),
+                &[ladder::Region::Europe; 4],
+            )
+        } else {
+            Packet::encode_session_regions(
+                &profiles,
+                "0123456789abcde",
+                &[ladder::Region::Europe; 4],
+            )
+        })
+        .map(|packet| ladder::Prepared {
+            match_id: Some("fixture-session-001".into()),
+            profiles,
+            packet,
+            expires_at: Some(4102444800),
+        })
     } else {
         ladder::Prepared::preview(profiles)
     })
@@ -339,4 +357,52 @@ fn a_finished_request_for_a_previous_roster_is_discarded() {
     assert!(seed.stage == Stage::Fetch);
     assert!(seed.job.is_none());
     assert!(seed.packet.is_none());
+}
+
+#[test]
+fn mmr_seed_preserves_teams_and_gates_start_until_every_field_is_confirmed() {
+    let (mut seed, mut engine, payload, _, now) = prepared_wire(true, true);
+    assert_eq!(seed.packet.as_ref().unwrap().handicaps[0], 44);
+    assert!(four_teams(
+        &serde_json::from_value(payload.clone()).unwrap()
+    ));
+    assert!(seed.ready(&serde_json::from_value(payload).unwrap()));
+    assert_eq!(engine.start_now(now)[0].message, "LobbyStart");
+    assert!(
+        seed.notice
+            .take()
+            .unwrap()
+            .contains("result ticket confirmed")
+    );
+}
+
+#[test]
+fn a_preserved_job_cannot_cross_map_protocols_at_the_same_path() {
+    for disconnect in [false, true] {
+        for (old, new) in [(ladder::LEGACY_MAP_NAME, ladder::MAP_NAME),
+                           (ladder::MAP_NAME, ladder::LEGACY_MAP_NAME),
+                           (ladder::MAP_NAME, ladder::MAP_NAME),
+                           (ladder::LEGACY_MAP_NAME, ladder::LEGACY_MAP_NAME)] {
+            let (mut engine, mut payload) = fixture();
+            payload["mapData"]["mapName"] = json!(old);
+            let mut seed = Seed::default();
+            let (tx, rx) = mpsc::channel();
+            let lobby = serde_json::from_value(payload.clone()).unwrap();
+            seed.job = Some(Job { key: roster_key(&lobby).unwrap(), rx });
+            seed.reset();
+            payload["mapData"]["mapName"] = json!(new);
+            receive(&mut seed, &mut engine, &payload, 1);
+            seed.key = roster_key(&serde_json::from_value(payload.clone()).unwrap()).unwrap();
+            seed.stage = Stage::Fetch;
+            if !disconnect {
+                tx.send(Err(ladder::Error::Unavailable)).unwrap();
+            }
+            drop(tx);
+            seed.advance(&engine, 1, true, true);
+            assert_eq!(seed.stage == Stage::Unavailable, old == new);
+            assert_eq!(seed.stage == Stage::Fetch, old != new);
+            assert!(seed.job.is_none());
+            assert!(seed.packet.is_none());
+        }
+    }
 }

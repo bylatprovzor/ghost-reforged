@@ -69,7 +69,8 @@ fn humans(lobby: &Lobby) -> Option<[&Player; 4]> {
 fn roster_key(lobby: &Lobby) -> Option<String> {
     let rows = humans(lobby)?;
     Some(format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
+        ladder::uses_mmr_packet(&lobby.map_data.map_name),
         lobby.map_data.map_path,
         lobby.lobby_name,
         rows.iter()
@@ -104,7 +105,7 @@ fn four_teams(lobby: &Lobby) -> bool {
 }
 
 fn computer_row<'a>(lobby: &'a Lobby, packet: &Packet, index: usize) -> Option<&'a Player> {
-    if matches!(packet.handicaps[0], 45 | 46) {
+    if matches!(packet.handicaps[0], 43..=46) {
         lobby.players.iter().find(|p| {
             p.slot as usize == index + 4 && p.slot_type == 1 && p.slot_status == 2 && !p.is_observer
         })
@@ -353,21 +354,25 @@ impl Seed {
                             }
                         }
                         Err(mpsc::TryRecvError::Disconnected) => {
+                            let current_job = job.key == self.key;
                             self.job = None;
-                            self.fail("Ladder request failed.");
+                            if current_job {
+                                self.fail("Ladder request failed.");
+                            }
                         }
                         Err(mpsc::TryRecvError::Empty) => {}
                     }
                 } else {
                     let tags = humans(lobby).unwrap().map(|p| p.name.clone());
                     let regions = humans(lobby).unwrap().map(ladder::Region::from_player);
+                    let map_name = lobby.map_data.map_name.clone();
                     let (tx, rx) = mpsc::channel();
                     self.job = Some(Job {
                         key: self.key.clone(),
                         rx,
                     });
                     thread::spawn(move || {
-                        let _ = tx.send(ladder::prepare(&tags, &regions));
+                        let _ = tx.send(ladder::prepare_for_map(&tags, &regions, &map_name));
                     });
                 }
                 Vec::new()
@@ -413,7 +418,7 @@ impl Seed {
                     Command::new("SetRace", json!({"slot":p.slot,"raceId":s.race})),
                     Command::new("SetHandicap", json!({"slot":p.slot,"handicap":s.handicap})),
                 ];
-                if !matches!(packet.handicaps[0], 45 | 46) {
+                if !matches!(packet.handicaps[0], 43..=46) {
                     commands.push(Command::new(
                         "SetTeam",
                         json!({"slot":p.slot,"team":s.team}),
@@ -442,7 +447,7 @@ impl Seed {
                 }
                 self.stage = Stage::Ready;
                 self.notice = Some(
-                    if packet.handicaps[0] == 46
+                    if matches!(packet.handicaps[0], 44 | 46)
                         || (packet.handicaps[0] == 47 && packet.handicaps[1] == 84)
                     {
                         "Ladder profiles and result ticket confirmed for all four players."
