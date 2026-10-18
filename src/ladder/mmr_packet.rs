@@ -23,7 +23,7 @@ impl Packet {
         let mut rows = [[0u32; 3]; 4];
         for (i, p) in profiles.iter().enumerate() {
             let mmr = i64::from(p.mmr.ok_or(Error::InvalidRoster)?);
-            let games = p.mmr_games.ok_or(Error::InvalidRoster)?;
+            p.mmr_games.ok_or(Error::InvalidRoster)?;
             if p.slot as usize != i || !p.valid_rank() {
                 return Err(Error::InvalidRoster);
             }
@@ -34,7 +34,7 @@ impl Packet {
                 } else {
                     (-mmr * 2 - 1) as u32
                 },
-                u32::from(games < 10),
+                u32::from(p.rank.is_none()),
             ];
         }
         let width = |n: u32| 32 - n.leading_zeros();
@@ -103,7 +103,7 @@ mod tests {
             wins: 0,
             losses: 0,
             mmr: Some(values[i]),
-            mmr_games: Some(if i == 0 { 0 } else { 10 }),
+            mmr_games: Some(if i == 0 { 2 } else { 3 }),
         });
         let regions = [
             Region::Europe,

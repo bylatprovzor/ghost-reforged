@@ -12,6 +12,8 @@ pub use region::Region;
 use serde::Deserialize;
 pub use session::{Prepared, prepare, prepare_for_map};
 
+pub const MINIMUM_MMR_GAMES: u32 = 3;
+
 pub const MAP_NAME: &str = "Survival Chaos Reforged 1.59a Ranked";
 pub const LEGACY_MAP_NAME: &str = "Survival Chaos Reforged Rank";
 
@@ -31,7 +33,7 @@ pub struct Profile {
 impl Profile {
     pub fn mmr_summary(&self) -> String {
         let value = self.mmr.map_or_else(|| "???".into(), |m| m.to_string());
-        let provisional = if self.mmr_games.is_some_and(|n| n < 10) {
+        let provisional = if self.mmr_games.is_some() && self.rank.is_none() {
             " (provisional)"
         } else {
             ""
@@ -45,7 +47,7 @@ impl Profile {
     pub(super) fn valid_rank(&self) -> bool {
         self.rank != Some(0)
             && match (self.mmr, self.mmr_games) {
-                (Some(_), Some(games)) => games >= 10 || self.rank.is_none(),
+                (Some(_), Some(games)) => games >= MINIMUM_MMR_GAMES || self.rank.is_none(),
                 (None, None) => {
                     u64::from(self.wins) + u64::from(self.losses) >= 3 || self.rank.is_none()
                 }
