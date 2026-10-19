@@ -43,7 +43,7 @@ fn decode(status: u16, body: &str, tag: &str) -> Result<Profile, Error> {
             wins: 0,
             losses: 0,
             rank: None,
-            mmr: Some(1000),
+            mmr: Some(1500),
             mmr_games: Some(0),
         });
     }

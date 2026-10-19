@@ -28,6 +28,12 @@ fn only_an_explicit_missing_player_is_an_unranked_zero_record() {
     assert_eq!(
         decode(404, r#"{"error":"player_not_found"}"#, "New#1234")
             .unwrap()
+            .mmr_summary(),
+        "MMR: 1500 (provisional), Rank: ???"
+    );
+    assert_eq!(
+        decode(404, r#"{"error":"player_not_found"}"#, "New#1234")
+            .unwrap()
             .summary(),
         "Wins: 0, Loss: 0, Rank: ???"
     );
