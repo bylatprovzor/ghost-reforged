@@ -31,6 +31,8 @@ impl Engine {
     }
 
     pub fn expect_client_initialization(&mut self) {
+        self.native_initialization = true;
+        self.authenticated_initialization = false;
         self.initialization_required = true;
         self.provider_ready = false;
     }

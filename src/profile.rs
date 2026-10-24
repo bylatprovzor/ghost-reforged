@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub struct Profile {
     #[serde(default)]
     pub headless: bool,
+    #[serde(default = "private_by_default")]
+    pub minimize_window: bool,
     pub title: String,
     pub map: Option<PathBuf>,
     #[serde(default, rename = "bot_name", skip_serializing)]
@@ -19,8 +21,12 @@ pub struct Profile {
     #[serde(default = "private_by_default", skip_serializing)]
     pub auto_start: bool,
     pub rehost: bool,
+    #[serde(default)]
+    pub reuse_session: bool,
     #[serde(default = "private_by_default")]
     pub private_game: bool,
+    #[serde(default)]
+    pub lobby_password: String,
     #[serde(default)]
     pub speed: GameSpeed,
     #[serde(default = "private_by_default")]
@@ -33,6 +39,10 @@ pub struct Profile {
     pub rehost_delay_seconds: u64,
     #[serde(default)]
     pub empty_rehost_seconds: u64,
+    #[serde(default = "crate::config::default_startup_timeout")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "crate::config::default_creation_timeout")]
+    pub creation_timeout_seconds: u64,
 }
 
 fn rehost_delay() -> u64 {
@@ -77,6 +87,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             headless: false,
+            minimize_window: true,
             title: "Profile 1".into(),
             map: None,
             legacy_bot_name: serde::de::IgnoredAny,
@@ -87,13 +98,17 @@ impl Default for Profile {
             countdown: 0,
             auto_start: true,
             rehost: true,
+            reuse_session: false,
             private_game: true,
+            lobby_password: String::new(),
             speed: GameSpeed::Fast,
             require_full: true,
             commands: Default::default(),
             welcome: Default::default(),
             rehost_delay_seconds: rehost_delay(),
             empty_rehost_seconds: 0,
+            startup_timeout_seconds: crate::config::default_startup_timeout(),
+            creation_timeout_seconds: crate::config::default_creation_timeout(),
         }
     }
 }
@@ -102,6 +117,11 @@ impl Profile {
     pub fn config(&self, directory: &std::path::Path) -> Result<crate::config::Config, String> {
         use crate::config::{Config, HostMode};
         self.validate()?;
+        if self.private_game && !crate::config::valid_lobby_password(&self.lobby_password) {
+            return Err(
+                "Set a lobby password of 3 to 19 characters, or choose a public lobby.".into(),
+            );
+        }
         let map = crate::maps::validate(
             self.map
                 .as_deref()
@@ -109,6 +129,7 @@ impl Profile {
         )?;
         Ok(Config {
             headless: self.headless,
+            minimize_window: self.minimize_window,
             maps: vec![map],
             host_mode: HostMode::Observer,
             lobby_name: self.lobby_pattern.clone(),
@@ -118,6 +139,8 @@ impl Profile {
             require_full: self.require_full,
             rehost_delay_seconds: self.rehost_delay_seconds,
             empty_rehost_seconds: self.empty_rehost_seconds,
+            startup_timeout_seconds: self.startup_timeout_seconds,
+            creation_timeout_seconds: self.creation_timeout_seconds,
             auto_start: true,
             commands: self.commands.clone(),
             stats_path: Some(directory.join("players.json")),
@@ -125,8 +148,9 @@ impl Profile {
             resume_lobby: true,
             countdown_seconds: 0,
             leave_on_load: self.rehost,
-            restart_on_load: self.rehost,
+            restart_on_load: self.rehost && !self.reuse_session,
             private_game: self.private_game,
+            lobby_password: self.lobby_password.clone(),
             max_games: if self.rehost { 0 } else { 1 },
             ..Config::default()
         })
@@ -138,6 +162,7 @@ impl Profile {
             minimum: self.players,
             full: self.require_full,
             rehost: self.rehost,
+            reuse_session: self.reuse_session,
             rehost_delay: self.rehost_delay_seconds,
             empty_refresh: self.empty_rehost_seconds,
             commands: self.commands.clone(),
@@ -147,6 +172,22 @@ impl Profile {
 
     pub fn validate(&self) -> Result<(), String> {
         self.welcome.validate()?;
+        // Older profiles remain readable and editable. Hosting, rather than
+        // loading the profile store, requires a private lobby password.
+        if !self.lobby_password.is_empty()
+            && !crate::config::valid_lobby_password(&self.lobby_password)
+        {
+            return Err("Lobby passwords must contain 3 to 19 characters.".into());
+        }
+        if !crate::config::valid_startup_timers(
+            self.startup_timeout_seconds,
+            self.creation_timeout_seconds,
+        ) {
+            return Err(
+                "Startup timeout must be 60–900 seconds; creation timeout must be 30–300 seconds."
+                    .into(),
+            );
+        }
         if self.title.trim().is_empty()
             || self.title.chars().count() > 60
             || self.title.chars().any(char::is_control)

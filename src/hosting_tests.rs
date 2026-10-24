@@ -36,7 +36,10 @@ pub(super) fn ready(occupied: bool) -> Engine {
     });
     engine.on_event(&event("GameList", json!({})), 0);
     engine.on_event(
-        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
         0,
     );
     engine.on_event(
@@ -306,7 +309,8 @@ fn stopping_during_number_reservation_is_not_a_failure() {
                 &rx,
                 &tx,
                 &AtomicBool::new(already_cancelled),
-                &mut VecDeque::new()
+                &mut VecDeque::new(),
+                Duration::from_secs(120)
             )
             .unwrap(),
             Reservation::Cancelled
@@ -329,7 +333,17 @@ fn a_failed_number_save_still_stops_creation() {
             saved: false,
         })
         .unwrap();
-    assert!(reserve(1, &rx, &tx, &AtomicBool::new(false), &mut VecDeque::new()).is_err());
+    assert!(
+        reserve(
+            1,
+            &rx,
+            &tx,
+            &AtomicBool::new(false),
+            &mut VecDeque::new(),
+            Duration::from_secs(120)
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -350,7 +364,15 @@ fn reservation_preserves_settings_received_before_the_acknowledgment() {
         .unwrap();
     let mut deferred = VecDeque::new();
     assert_eq!(
-        reserve(1, &rx, &tx, &AtomicBool::new(false), &mut deferred).unwrap(),
+        reserve(
+            1,
+            &rx,
+            &tx,
+            &AtomicBool::new(false),
+            &mut deferred,
+            Duration::from_secs(120)
+        )
+        .unwrap(),
         Reservation::Saved
     );
     assert!(matches!(
@@ -360,6 +382,35 @@ fn reservation_preserves_settings_received_before_the_acknowledgment() {
             full: false
         })
     ));
+}
+
+#[test]
+fn slow_durable_counter_acknowledgment_is_awaited_before_creating() {
+    let (commands, rx) = mpsc::channel();
+    let (tx, events) = mpsc::channel();
+    let frontend = thread::spawn(move || {
+        assert!(matches!(events.recv().unwrap(), Event::Reserve(1)));
+        thread::sleep(Duration::from_secs(6));
+        commands
+            .send(Control::Reserved {
+                number: 1,
+                saved: true,
+            })
+            .unwrap();
+    });
+    assert_eq!(
+        reserve(
+            1,
+            &rx,
+            &tx,
+            &AtomicBool::new(false),
+            &mut VecDeque::new(),
+            Duration::from_secs(10)
+        )
+        .unwrap(),
+        Reservation::Saved
+    );
+    frontend.join().unwrap();
 }
 
 #[test]
@@ -388,6 +439,7 @@ fn live_settings_change_the_current_lobby_without_recreating_it() {
         minimum: 3,
         full: false,
         rehost: false,
+        reuse_session: false,
         rehost_delay: 12,
         empty_refresh: 60,
         commands: Default::default(),

@@ -22,6 +22,7 @@ pub enum ConfigError {
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub headless: bool,
+    pub minimize_window: bool,
     pub expected_version: String,
     pub maps: Vec<PathBuf>,
     pub lobby_name: String,
@@ -46,6 +47,8 @@ pub struct Config {
     pub snapshot_interval_seconds: u64,
     pub stale_after_seconds: u64,
     pub command_timeout_seconds: u64,
+    pub startup_timeout_seconds: u64,
+    pub creation_timeout_seconds: u64,
     pub load_timeout_seconds: u64,
     pub max_games: u32,
     pub map_settings: MapSettings,
@@ -128,7 +131,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             headless: false,
-            expected_version: "3.0.0.24268".into(),
+            minimize_window: true,
+            expected_version: "3.0.1.24371".into(),
             maps: Vec::new(),
             lobby_name: "GHost Rust #{n}".into(),
             first_number: 1,
@@ -152,6 +156,8 @@ impl Default for Config {
             snapshot_interval_seconds: 2,
             stale_after_seconds: 8,
             command_timeout_seconds: 30,
+            startup_timeout_seconds: default_startup_timeout(),
+            creation_timeout_seconds: default_creation_timeout(),
             load_timeout_seconds: 180,
             max_games: 0,
             map_settings: MapSettings::default(),
@@ -179,6 +185,9 @@ impl Config {
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.welcome.validate().map_err(ConfigError::Invalid)?;
         let invalid = |s: &str| Err(ConfigError::Invalid(s.into()));
+        if self.private_game && !valid_lobby_password(&self.lobby_password) {
+            return invalid("private lobbies require a password of 3 to 19 characters");
+        }
         if self.maps.is_empty() {
             return invalid("maps must contain at least one .w3x or .w3m file");
         }
@@ -224,6 +233,7 @@ impl Config {
         if self.countdown_seconds > 300
             || !(5..=3600).contains(&self.rehost_delay_seconds)
             || !(5..=300).contains(&self.command_timeout_seconds)
+            || !valid_startup_timers(self.startup_timeout_seconds, self.creation_timeout_seconds)
             || !(10..=600).contains(&self.load_timeout_seconds)
             || self.stale_after_seconds > 300
             || self.empty_rehost_seconds > 86400
@@ -251,4 +261,20 @@ impl Config {
     pub fn name(&self, number: u32) -> String {
         self.lobby_name.replace("{n}", &number.to_string())
     }
+}
+
+pub(crate) fn default_startup_timeout() -> u64 {
+    300
+}
+
+pub(crate) fn valid_lobby_password(password: &str) -> bool {
+    (3..=19).contains(&password.encode_utf16().count()) && !password.chars().any(char::is_control)
+}
+
+pub(crate) fn default_creation_timeout() -> u64 {
+    120
+}
+
+pub(crate) fn valid_startup_timers(startup: u64, creation: u64) -> bool {
+    (60..=900).contains(&startup) && (30..=300).contains(&creation)
 }

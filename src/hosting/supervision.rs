@@ -1,4 +1,5 @@
 use super::*;
+use crate::discovery;
 
 pub(super) fn attempt<T>(action: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(action)).unwrap_or_else(|_| {
@@ -9,10 +10,14 @@ pub(super) fn attempt<T>(action: impl FnOnce() -> Result<T, String>) -> Result<T
 /// These guards belong to the hosting intent, not to a socket attempt.
 #[derive(Default)]
 pub(super) struct Resources {
+    pub progress: health::Progress,
     pub game: Option<background::Background>,
     pub identity: Option<HostIdentity>,
     pub launcher: background::LauncherLaunch,
     pub generation: u64,
+    pub startup: crate::background_startup::Startup,
+    pub initialization: connection::Initialization,
+    pub login_recovery: super::login_recovery::Recovery,
 }
 
 impl Resources {
@@ -20,6 +25,9 @@ impl Resources {
         if self.game.as_ref().is_some_and(|game| !game.running()) {
             self.identity = None;
             self.game = None;
+            self.startup.ready();
+            self.initialization = Default::default();
+            self.login_recovery = Default::default();
             self.generation = self.generation.wrapping_add(1);
             true
         } else {
@@ -31,13 +39,26 @@ impl Resources {
 #[derive(Default)]
 pub(super) struct Retry {
     failures: u32,
+    healthy_since: Option<Instant>,
 }
 
 impl Retry {
-    pub fn delay(&mut self, stable: Duration) -> Duration {
-        if stable >= Duration::from_secs(60) {
+    pub fn observe(&mut self, engine: &Engine, identity_ready: bool, now: u64, at: Instant) {
+        if !identity_ready
+            || !matches!(engine.phase, Phase::Lobby | Phase::Countdown(_))
+            || engine.owned_lobby(now).is_none()
+        {
+            self.healthy_since = None;
+            return;
+        }
+        let since = self.healthy_since.get_or_insert(at);
+        if at.saturating_duration_since(*since) >= Duration::from_secs(60) {
             self.failures = 0;
         }
+    }
+
+    pub fn delay(&mut self) -> Duration {
+        self.healthy_since = None;
         let seconds = [2, 5, 10, 30, 60][self.failures.min(4) as usize];
         self.failures = self.failures.saturating_add(1);
         Duration::from_secs(seconds)
@@ -54,6 +75,7 @@ pub(super) fn wait(
 ) -> bool {
     let deadline = Instant::now() + delay;
     while Instant::now() < deadline && !stop.load(Ordering::SeqCst) {
+        resources.progress.pulse(health::Stage::Backoff);
         // Ignore old slot/start actions: they referred to the failed session.
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(Control::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
@@ -83,6 +105,7 @@ pub(super) fn connect(
     retry: &mut Retry,
 ) -> Result<Option<connection::Connection>, String> {
     while !stop.load(Ordering::SeqCst) {
+        resources.progress.pulse(health::Stage::Connecting);
         if resources.clear_dead() {
             engine.client_lost(started.elapsed().as_secs());
             *repair = Default::default();
@@ -121,7 +144,35 @@ pub(super) fn connect(
             Ok(Some(connection)) => return Ok(Some(connection)),
             Ok(None) => return Ok(None),
             Err(error) => {
-                let delay = retry.delay(Duration::ZERO);
+                if resources
+                    .startup
+                    .expired(Duration::from_secs(config.startup_timeout_seconds))
+                    && let Some(game) = &mut resources.game
+                    && resources.startup.owns(game.pid())
+                    && !stop.load(Ordering::SeqCst)
+                {
+                    // Recheck immediately before resetting. A late listener revokes
+                    // startup ownership even if its handshake is not yet ready.
+                    match discovery::has_listener(game.pid()) {
+                        Ok(false) => {
+                            status(
+                                tx,
+                                "Native startup timed out. Restarting the requested client…",
+                            );
+                            game.terminate()?;
+                            if resources.clear_dead() {
+                                engine.client_lost(started.elapsed().as_secs());
+                                *repair = Default::default();
+                                let _ = tx.send(Event::ClientChanged(None));
+                            }
+                        }
+                        Ok(true) => resources
+                            .login_recovery
+                            .listener_ready(&mut resources.startup, game.pid()),
+                        Err(_) => {}
+                    }
+                }
+                let delay = retry.delay();
                 status(
                     tx,
                     &format!("{error} Retrying automatically in {} s…", delay.as_secs()),
@@ -157,9 +208,56 @@ mod tests {
     fn retries_never_exhaust_and_reset_after_a_healthy_minute() {
         let mut retry = Retry::default();
         for seconds in [2, 5, 10, 30, 60, 60, 60] {
-            assert_eq!(retry.delay(Duration::ZERO).as_secs(), seconds);
+            assert_eq!(retry.delay().as_secs(), seconds);
         }
-        assert_eq!(retry.delay(Duration::from_secs(60)).as_secs(), 2);
+        let mut engine = super::super::tests::ready(false);
+        let began = Instant::now();
+        for now in 0..=60 {
+            engine.on_event(&super::super::tests::lobby(false), now);
+            retry.observe(&engine, true, now, began + Duration::from_secs(now));
+        }
+        assert_eq!(retry.delay().as_secs(), 2);
+    }
+
+    #[test]
+    fn an_open_socket_without_a_fresh_owned_lobby_never_resets_backoff() {
+        let mut retry = Retry::default();
+        let began = Instant::now();
+        let mut engine = super::super::tests::ready(false);
+        for (index, phase) in [
+            Phase::AwaitSignIn,
+            Phase::Creating(0),
+            Phase::Recovering(0),
+            Phase::Starting(0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            engine.phase = phase;
+            retry.observe(
+                &engine,
+                true,
+                0,
+                began + Duration::from_secs(index as u64 * 1000),
+            );
+            retry.observe(
+                &engine,
+                true,
+                0,
+                began + Duration::from_secs(index as u64 * 1000 + 70),
+            );
+            assert_eq!(retry.delay().as_secs(), [2, 5, 10, 30][index]);
+        }
+        engine.phase = Phase::Lobby;
+        let began = began + Duration::from_secs(4000);
+        retry.observe(&engine, true, 0, began);
+        retry.observe(&engine, false, 0, began + Duration::from_secs(59));
+        retry.observe(&engine, true, 0, began + Duration::from_secs(60));
+        assert_eq!(retry.delay().as_secs(), 60);
+        let began = began + Duration::from_secs(1000);
+        retry.observe(&engine, true, 0, began);
+        retry.observe(&engine, true, 1000, began + Duration::from_secs(60));
+        assert_eq!(retry.delay().as_secs(), 60);
     }
 
     #[test]

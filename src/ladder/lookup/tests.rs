@@ -28,6 +28,12 @@ fn only_an_explicit_missing_player_is_an_unranked_zero_record() {
     assert_eq!(
         decode(404, r#"{"error":"player_not_found"}"#, "New#1234")
             .unwrap()
+            .mmr_summary(),
+        "MMR: 1500 (provisional), Rank: ???"
+    );
+    assert_eq!(
+        decode(404, r#"{"error":"player_not_found"}"#, "New#1234")
+            .unwrap()
             .summary(),
         "Wins: 0, Loss: 0, Rank: ???"
     );
@@ -68,6 +74,8 @@ fn pending_reads_are_shared_cached_and_bounded_without_blocking() {
         wins: 8,
         losses: 2,
         rank: Some(4),
+        mmr: None,
+        mmr_games: None,
     }))
     .unwrap();
     assert_eq!(
@@ -102,6 +110,8 @@ fn leaving_or_rehosting_discards_results_and_welcome_waits_for_the_same_record()
         wins: 8,
         losses: 2,
         rank: Some(4),
+        mmr: None,
+        mmr_games: None,
     }))
     .unwrap();
     assert_eq!(
@@ -125,9 +135,77 @@ fn leaving_or_rehosting_discards_results_and_welcome_waits_for_the_same_record()
 }
 
 #[test]
+fn mmr_summary_is_limited_to_supported_survival_chaos_maps() {
+    let mut room = lobby();
+    room.map_data.map_name = crate::ladder::MAP_NAME.into();
+    let mut lookup = Lookup::default();
+    lookup.observe(Some(&room));
+    let tx = pending(&mut lookup, 0);
+    tx.send(Ok(Profile {
+        slot: 0,
+        battletag: "Player#1234".into(),
+        wins: 0,
+        losses: 0,
+        rank: None,
+        mmr: Some(1000),
+        mmr_games: Some(0),
+    }))
+    .unwrap();
+    assert_eq!(
+        lookup.query("Player#1234", 1).unwrap(),
+        "MMR: 1000 (provisional), Rank: ???"
+    );
+    room.map_data.map_name = "An unrelated map".into();
+    lookup.observe(Some(&room));
+    let tx = pending(&mut lookup, 2);
+    tx.send(Ok(Profile {
+        slot: 0,
+        battletag: "Player#1234".into(),
+        wins: 2,
+        losses: 1,
+        rank: None,
+        mmr: Some(1024),
+        mmr_games: Some(3),
+    }))
+    .unwrap();
+    assert_eq!(
+        lookup.query("Player#1234", 3).unwrap(),
+        "Wins: 2, Loss: 1, Rank: ???"
+    );
+}
+
+#[test]
 #[ignore = "Read-only check against the deployed player API"]
 fn live_individual_profile_read() {
     let profile = fetch_player("ArteMy#21249").expect("Public player API");
     assert_eq!(profile.battletag.to_lowercase(), "artemy#21249");
     println!("{}", profile.announcement());
+}
+
+#[test]
+fn legacy_map_keeps_legacy_chat_and_clears_the_mmr_cache() {
+    let mut room = lobby();
+    room.map_data.map_name = crate::ladder::MAP_NAME.into();
+    let mut lookup = Lookup::default();
+    lookup.observe(Some(&room));
+    let tx = pending(&mut lookup, 0);
+    room.map_data.map_name = crate::ladder::LEGACY_MAP_NAME.into();
+    lookup.observe(Some(&room));
+    assert!(tx.send(Err(Error::Unavailable)).is_err());
+    assert!(!lookup.mmr);
+    let tx = pending(&mut lookup, 1);
+    tx.send(Ok(Profile {
+        slot: 0,
+        battletag: "Player#1234".into(),
+        wins: 2,
+        losses: 1,
+        rank: None,
+        mmr: Some(1024),
+        mmr_games: Some(3),
+    }))
+    .unwrap();
+    assert_eq!(
+        lookup.query("Player#1234", 2).unwrap(),
+        "Wins: 2, Loss: 1, Rank: ???"
+    );
 }

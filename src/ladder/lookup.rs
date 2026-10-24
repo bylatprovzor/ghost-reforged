@@ -9,6 +9,7 @@ use std::{
 };
 
 pub const UNKNOWN: &str = "Wins: ???, Loss: ???, Rank: ???";
+const MMR_UNKNOWN: &str = "MMR: ???, Rank: ???";
 
 pub fn fetch_player(tag: &str) -> Result<Profile, Error> {
     let agent = ureq::Agent::config_builder()
@@ -42,6 +43,8 @@ fn decode(status: u16, body: &str, tag: &str) -> Result<Profile, Error> {
             wins: 0,
             losses: 0,
             rank: None,
+            mmr: Some(1500),
+            mmr_games: Some(0),
         });
     }
     if status != 200 {
@@ -52,10 +55,7 @@ fn decode(status: u16, body: &str, tag: &str) -> Result<Profile, Error> {
         .ok_or(Error::InvalidRoster)?
         .insert("slot".into(), 0.into());
     let profile: Profile = serde_json::from_value(value).map_err(|_| Error::InvalidRoster)?;
-    if !profile.battletag.eq_ignore_ascii_case(tag)
-        || profile.rank == Some(0)
-        || (u64::from(profile.wins) + u64::from(profile.losses) < 3 && profile.rank.is_some())
-    {
+    if !profile.battletag.eq_ignore_ascii_case(tag) || !profile.valid_rank() {
         return Err(Error::InvalidRoster);
     }
     Ok(profile)
@@ -69,6 +69,7 @@ struct Entry {
 
 #[derive(Default)]
 pub struct Lookup {
+    mmr: bool,
     lobby: Option<(String, String)>,
     players: BTreeSet<String>,
     entries: BTreeMap<String, Entry>,
@@ -76,10 +77,12 @@ pub struct Lookup {
 
 impl Lookup {
     pub fn observe(&mut self, lobby: Option<&Lobby>) {
+        let mmr = lobby.is_some_and(|l| super::uses_mmr_packet(&l.map_data.map_name));
         let identity = lobby.map(|l| (l.lobby_name.clone(), l.map_data.map_path.clone()));
-        if self.lobby != identity {
+        if self.lobby != identity || self.mmr != mmr {
             *self = Self {
                 lobby: identity,
+                mmr,
                 ..Self::default()
             };
         }
@@ -98,8 +101,9 @@ impl Lookup {
 
     // None means a request is pending. Failures are explicit and cached briefly.
     pub fn query(&mut self, tag: &str, now: u64) -> Option<String> {
+        let unknown = if self.mmr { MMR_UNKNOWN } else { UNKNOWN };
         if !self.contains(tag) || !tag.contains('#') {
-            return Some(UNKNOWN.into());
+            return Some(unknown.into());
         }
         if self
             .entries
@@ -121,13 +125,22 @@ impl Lookup {
             Entry {
                 job,
                 since: now,
-                text: UNKNOWN.into(),
+                text: unknown.into(),
             }
         });
         if let Some(rx) = &entry.job {
             match rx.try_recv() {
                 Ok(result) => {
-                    entry.text = result.map_or_else(|_| UNKNOWN.into(), |p| p.summary());
+                    entry.text = result.map_or_else(
+                        |_| unknown.into(),
+                        |p| {
+                            if self.mmr {
+                                p.mmr_summary()
+                            } else {
+                                p.summary()
+                            }
+                        },
+                    );
                     entry.job = None;
                     entry.since = now;
                 }

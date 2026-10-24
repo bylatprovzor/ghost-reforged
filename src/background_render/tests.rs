@@ -87,8 +87,13 @@ fn echo_fixture() {
     } else {
         None
     };
+    let window = if mode == "game" && std::env::var_os("GHOST_RENDER_WINDOW").is_some() {
+        delayed_window()
+    } else {
+        0
+    };
     println!(
-        "\nRENDER ready {}",
+        "\nRENDER ready {} {window}",
         browser.as_ref().map_or(0, |b| b.0.id())
     );
     std::io::stdout().flush().unwrap();
@@ -114,32 +119,40 @@ struct Fixture {
     game: Child,
     output: Receiver<String>,
     browser: u32,
+    window: usize,
     browser_handle: windows_sys::Win32::Foundation::HANDLE,
     _directory: Option<tempfile::TempDir>,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_window(false)
+    }
+    fn with_window(window: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("Warcraft III.exe");
         let browser = directory.path().join("BlizzardBrowser/BlizzardBrowser.exe");
         std::fs::create_dir_all(browser.parent().unwrap()).unwrap();
         std::fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
         std::fs::copy(&path, &browser).unwrap();
-        Self::at(&path, Some(directory))
+        Self::at(&path, Some(directory), window)
     }
     fn same_installation(&self) -> Self {
         let game = process::Process::open(self.game.id(), false).unwrap();
-        Self::at(&game.path, None)
+        Self::at(&game.path, None, false)
     }
-    fn at(path: &std::path::Path, directory: Option<tempfile::TempDir>) -> Self {
-        let mut game = fixture_command(path, "background_render::tests::echo_fixture")
-            .env("GHOST_RENDER_ECHO", "game")
-            .spawn()
-            .unwrap();
+    fn at(path: &std::path::Path, directory: Option<tempfile::TempDir>, window: bool) -> Self {
+        let mut command = fixture_command(path, "background_render::tests::echo_fixture");
+        command.env("GHOST_RENDER_ECHO", "game");
+        if window {
+            command.env("GHOST_RENDER_WINDOW", "1");
+        }
+        let mut game = command.spawn().unwrap();
         let output = replies(&mut game);
         let line = output.recv_timeout(Duration::from_secs(10)).unwrap();
-        let browser = line.strip_prefix("ready ").unwrap().parse().unwrap();
+        let mut fields = line.strip_prefix("ready ").unwrap().split_whitespace();
+        let browser = fields.next().unwrap().parse().unwrap();
+        let window = fields.next().unwrap().parse().unwrap();
         let browser_handle = unsafe {
             use windows_sys::Win32::System::Threading::*;
             OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, browser)
@@ -149,6 +162,7 @@ impl Fixture {
             game,
             output,
             browser,
+            window,
             browser_handle,
             _directory: directory,
         }
@@ -166,6 +180,143 @@ impl Fixture {
         let game = process::Process::open(self.game.id(), false).unwrap();
         process::Family::new(game.pid, game.created).unwrap()
     }
+}
+
+// This native window deliberately stalls its message pump while its separate
+// browser child remains available to prove actual suspension and resumption.
+fn delayed_window() -> usize {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        let window = CreateWindowExW(
+            WS_EX_APPWINDOW,
+            windows_sys::w!("STATIC"),
+            windows_sys::w!("Warcraft III render transition fixture"),
+            WS_OVERLAPPEDWINDOW,
+            0,
+            0,
+            8,
+            8,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        assert!(!window.is_null());
+        tx.send(window as usize).unwrap();
+        let mut message: MSG = std::mem::zeroed();
+        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
+            if message.message == WM_APP + 77 {
+                println!("RENDER blocked");
+                std::io::stdout().flush().unwrap();
+                thread::sleep(LEASE + Duration::from_secs(3));
+            } else {
+                DispatchMessageW(&message);
+            }
+        }
+    });
+    rx.recv_timeout(Duration::from_secs(5)).unwrap()
+}
+
+#[test]
+fn hidden_only_mode_pauses_and_resumes_without_waiting_for_a_blocked_window() {
+    let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::with_window(true);
+    let mut background = crate::background::Background::attach(fixture.game.id()).unwrap();
+    background.set_minimize_window(false);
+    background.hide().unwrap();
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        assert_ne!(PostMessageW(fixture.window as _, WM_APP + 77, 0, 0), 0);
+    }
+    assert_eq!(
+        fixture.output.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "blocked"
+    );
+    background.low_resource(true).unwrap();
+    fixture.ping();
+    let paused = fixture
+        .output
+        .recv_timeout(Duration::from_millis(200))
+        .is_err();
+    let began = Instant::now();
+    let resumed = background.low_resource(false);
+    let elapsed = began.elapsed();
+    if paused {
+        fixture.pong();
+    }
+    let iconic =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsIconic(fixture.window as _) };
+    drop(background);
+    drop(fixture);
+    assert!(paused, "Hidden-only mode must still suspend its browser");
+    assert!(resumed.is_ok(), "{resumed:?}");
+    assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+    assert_eq!(iconic, 0, "No minimize transition may be requested");
+}
+
+#[test]
+fn creation_pause_survives_slow_native_lobby_minimization() {
+    let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::with_window(true);
+    let mut background = crate::background::Background::attach(fixture.game.id()).unwrap();
+    background.pause_creation().unwrap();
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        assert_ne!(PostMessageW(fixture.window as _, WM_APP + 77, 0, 0), 0);
+    }
+    assert_eq!(
+        fixture.output.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "blocked"
+    );
+    fixture.ping();
+    let until = Instant::now() + LEASE + Duration::from_secs(4);
+    let mut released_early = false;
+    while Instant::now() < until {
+        background.low_resource(true).unwrap();
+        if fixture
+            .output
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok()
+        {
+            released_early = true;
+        }
+    }
+    background.low_resource(false).unwrap();
+    if !released_early {
+        fixture.pong();
+    }
+    assert!(
+        !released_early,
+        "Pending minimization let the existing browser lease expire"
+    );
+}
+
+#[test]
+fn resumed_browser_waits_for_minimization_before_a_new_pause() {
+    let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::with_window(true);
+    let mut background = crate::background::Background::attach(fixture.game.id()).unwrap();
+    background.pause_creation().unwrap();
+    background.low_resource(false).unwrap();
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        assert_ne!(PostMessageW(fixture.window as _, WM_APP + 77, 0, 0), 0);
+    }
+    assert_eq!(
+        fixture.output.recv_timeout(Duration::from_secs(2)).unwrap(),
+        "blocked"
+    );
+    background.low_resource(true).unwrap();
+    fixture.ping();
+    let reply = fixture.output.recv_timeout(Duration::from_millis(500));
+    drop(background);
+    drop(fixture);
+    assert_eq!(
+        reply.unwrap(),
+        "pong",
+        "A resumed guard is not an active creation lease"
+    );
 }
 
 impl Drop for Fixture {
@@ -213,6 +364,24 @@ fn native_family_pauses_only_its_browser_and_balances_repeated_requests() {
     first.pong();
     first.ping();
     first.pong();
+}
+
+#[test]
+fn creation_pause_releases_native_browser_before_departure() {
+    let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
+    let mut fixture = Fixture::new();
+    let mut unrelated = fixture.same_installation();
+    let mut background = crate::background::Background::attach(fixture.game.id()).unwrap();
+    background.pause_creation().unwrap();
+    fixture.ping();
+    assert!(matches!(
+        fixture.output.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    unrelated.ping();
+    unrelated.pong();
+    background.low_resource(false).unwrap();
+    fixture.pong();
 }
 
 #[test]

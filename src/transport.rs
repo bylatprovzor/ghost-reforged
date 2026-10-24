@@ -9,8 +9,14 @@ use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
-    #[error("Warcraft III rejected the local UI connection")]
+    #[error("Warcraft III local UI listener is unavailable")]
     Connect,
+    #[error("Warcraft III local UI handshake timed out")]
+    HandshakeTimeout,
+    #[error("Warcraft III local UI rejected the handshake (HTTP {0})")]
+    HandshakeRejected(u16),
+    #[error("Warcraft III local UI handshake failed")]
+    Handshake,
     #[error("Local UI connection closed or failed")]
     Disconnected,
     #[error("Invalid JSON from the local UI")]
@@ -23,6 +29,7 @@ pub struct Client(WebSocket<TcpStream>, Duration);
 mod tests;
 impl Client {
     pub fn connect(endpoint: &Endpoint) -> Result<Self, TransportError> {
+        let mut failure = TransportError::Connect;
         for &port in &endpoint.ports {
             let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
             let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_secs(2)) else {
@@ -36,16 +43,31 @@ impl Client {
             let config = WebSocketConfig::default()
                 .max_message_size(Some(8 * 1024 * 1024))
                 .max_frame_size(Some(8 * 1024 * 1024));
-            if let Ok((socket, _)) =
-                tungstenite::client::client_with_config(url, stream, Some(config))
-            {
-                let _ = socket
-                    .get_ref()
-                    .set_read_timeout(Some(Duration::from_millis(250)));
-                return Ok(Self(socket, Duration::from_millis(250)));
+            match tungstenite::client::client_with_config(url, stream, Some(config)) {
+                Ok((socket, _)) => {
+                    let _ = socket
+                        .get_ref()
+                        .set_read_timeout(Some(Duration::from_millis(250)));
+                    return Ok(Self(socket, Duration::from_millis(250)));
+                }
+                Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Http(reply))) => {
+                    failure = TransportError::HandshakeRejected(reply.status().as_u16());
+                }
+                Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Io(error)))
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    failure = TransportError::HandshakeTimeout;
+                }
+                Err(tungstenite::HandshakeError::Interrupted(_)) => {
+                    failure = TransportError::HandshakeTimeout;
+                }
+                Err(_) => failure = TransportError::Handshake,
             }
         }
-        Err(TransportError::Connect)
+        Err(failure)
     }
 
     pub fn send(&mut self, command: &str, payload: Value) -> Result<(), TransportError> {

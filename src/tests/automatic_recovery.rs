@@ -8,6 +8,78 @@ fn roster() -> Value {
     ])
 }
 
+#[test]
+fn idle_lobby_reconnect_preserves_players_and_does_not_cancel_or_leave() {
+    for occupied in [false, true] {
+        let mut engine = armed();
+        engine.config.auto_start = false;
+        let snapshot = if occupied {
+            roster()
+        } else {
+            lobby(vec![player(0, true, true, false)])
+        };
+        engine.on_event(&snapshot, 1);
+        engine.recover(2);
+        engine.recover(3); // A second socket failure must preserve the original context.
+        for now in [4, 5, 15, 60] {
+            let commands = engine.on_event(&snapshot, now);
+            assert!(!commands.iter().any(|c| matches!(
+                c.message,
+                "LobbyCancel" | "LeaveGame" | "CreateLobby" | "LobbyStart"
+            )));
+            assert_eq!(engine.phase, Phase::Lobby);
+            assert_eq!(engine.number(), 1);
+        }
+    }
+}
+
+#[test]
+fn a_countdown_seen_during_idle_recovery_still_requires_cancellation() {
+    let mut engine = armed();
+    engine.config.auto_start = false;
+    engine.on_event(&roster(), 1);
+    engine.recover(2);
+    engine.on_event(
+        &event(
+            "LobbyCountdown",
+            json!({"details":{"countdownActive":true}}),
+        ),
+        3,
+    );
+    engine.recover(4);
+    assert_eq!(engine.on_event(&roster(), 5)[0].message, "LobbyCancel");
+}
+
+#[test]
+fn repeated_socket_failure_keeps_the_outstanding_cancel_deadline() {
+    let mut engine = failed_start();
+    assert_eq!(engine.on_event(&roster(), 32)[0].message, "LobbyCancel");
+    engine.recover(33);
+    assert!(engine.on_event(&roster(), 34).is_empty());
+    assert_eq!(engine.on_event(&roster(), 42)[0].message, "LeaveGame");
+}
+
+#[test]
+fn idle_recovery_cannot_adopt_an_unrelated_map_and_loading_still_wins() {
+    let mut engine = armed();
+    engine.config.auto_start = false;
+    engine.on_event(&roster(), 1);
+    engine.recover(2);
+    let mut unrelated = roster();
+    unrelated["payload"]["mapData"]["mapPath"] = json!("another.w3x");
+    assert!(engine.on_event(&unrelated, 3).is_empty());
+    assert!(matches!(engine.phase, Phase::Recovering(_)));
+    assert!(
+        engine
+            .on_event(
+                &event("SetGlueScreen", json!({"screen":"LOADING_SCREEN"})),
+                4
+            )
+            .is_empty()
+    );
+    assert_eq!(engine.phase, Phase::InGame);
+}
+
 fn failed_start() -> Engine {
     let mut engine = armed();
     engine.config.host_mode = HostMode::Observer;

@@ -115,20 +115,26 @@ unsafe extern "system" fn interrupt(kind: u32) -> i32 {
         0
     }
 }
-pub(super) struct Interrupts;
+pub(super) struct Interrupts(bool);
 impl Interrupts {
     pub fn start() -> Result<Self, String> {
         INTERRUPTED.store(false, Ordering::SeqCst);
+        // The unattended controller has no console or console-close events.
+        if unsafe { GetConsoleCP() } == 0 {
+            return Ok(Self(false));
+        }
         if unsafe { SetConsoleCtrlHandler(Some(interrupt), 1) } == 0 {
             return Err("Cannot install graceful console shutdown".into());
         }
-        Ok(Self)
+        Ok(Self(true))
     }
 }
 impl Drop for Interrupts {
     fn drop(&mut self) {
-        unsafe {
-            SetConsoleCtrlHandler(Some(interrupt), 0);
+        if self.0 {
+            unsafe {
+                SetConsoleCtrlHandler(Some(interrupt), 0);
+            }
         }
     }
 }

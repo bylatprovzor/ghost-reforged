@@ -88,7 +88,7 @@ fn cancellation_timeout_error_and_drop_restore_publication() {
             0 => identity.cancel_creation().unwrap(),
             1 => {
                 identity.creating = Some(Instant::now() - Duration::from_secs(31));
-                assert!(identity.check_timeout().is_err());
+                assert!(identity.check_timeout(Duration::from_secs(30)).is_err());
             }
             2 => {
                 state.count.set(2);
@@ -105,6 +105,24 @@ fn resuming_a_blank_lobby_does_not_install_a_filter() {
     let (mut identity, state) = fixture();
     assert!(identity.confirm(&lobby()).unwrap());
     assert_eq!(state.installations.get(), 0);
+}
+
+#[test]
+fn slow_creation_keeps_identity_protection_until_the_configured_creation_deadline() {
+    let (mut identity, state) = fixture();
+    let budget = Duration::from_secs(120);
+    identity.begin_creation().unwrap();
+    identity.creating = Some(Instant::now() - Duration::from_secs(61));
+    assert!(identity.check_timeout(budget).is_ok());
+    assert!(state.active.get());
+    state.count.set(1);
+    assert!(identity.confirm(&lobby()).unwrap());
+    assert!(!state.active.get());
+
+    identity.begin_creation().unwrap();
+    identity.creating = Some(Instant::now() - Duration::from_secs(121));
+    assert!(identity.check_timeout(budget).is_err());
+    assert!(!state.active.get());
 }
 
 #[test]

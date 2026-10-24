@@ -29,6 +29,7 @@ pub enum Field {
     RehostDelay,
     EmptyRefresh,
     Welcome,
+    LobbyPassword,
 }
 
 #[derive(Debug, Clone)]
@@ -287,7 +288,7 @@ impl App {
         if self.worker.is_some()
             && matches!(
                 message,
-                Message::Edit(Field::Pattern | Field::Number, _)
+                Message::Edit(Field::Pattern | Field::Number | Field::LobbyPassword, _)
                     | Message::Private(_)
                     | Message::Speed(_)
                     | Message::MapName
@@ -392,6 +393,7 @@ impl App {
                     Field::RehostDelay => self.form.rehost_delay = value,
                     Field::EmptyRefresh => self.form.empty_refresh = value,
                     Field::Welcome => self.form.profile.welcome.message = value,
+                    Field::LobbyPassword => self.form.profile.lobby_password = value,
                 }
                 self.queue_settings();
             }

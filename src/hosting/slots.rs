@@ -7,6 +7,7 @@ use crate::{
     protocol::{Command, Lobby, OBSERVER_TEAM},
 };
 use serde_json::json;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotAction {
@@ -81,6 +82,14 @@ impl Snapshot {
 }
 
 impl SlotRequest {
+    pub(super) fn rejected_notice(&self) -> String {
+        format!(
+            "Slot {} · {} · not applied",
+            self.target.number + 1,
+            self.action.label()
+        )
+    }
+
     fn matches(&self, lobby: &Lobby) -> bool {
         let current = super::summarize(lobby, false, true);
         current.name == self.lobby
@@ -127,12 +136,17 @@ impl SlotRequest {
 #[derive(Default)]
 pub(super) struct PendingSlot {
     request: Option<(SlotRequest, u64, RefreshGate)>,
+    queued: VecDeque<(SlotRequest, u64)>,
     sent: bool,
 }
 
 impl PendingSlot {
     pub fn close_empty_observer(&mut self, engine: &Engine, now: u64) {
-        if self.request.is_some() || engine.phase != Phase::Lobby {
+        if self.request.is_some()
+            || !self.queued.is_empty()
+            || engine.phase != Phase::Lobby
+            || !engine.host_placement_ready(now)
+        {
             return;
         }
         let Some(lobby) = engine.owned_lobby(now) else {
@@ -151,14 +165,23 @@ impl PendingSlot {
         }
     }
 
-    pub fn request(&mut self, request: SlotRequest, engine: &Engine, now: u64) {
-        if self.request.is_none()
-            && engine.phase == Phase::Lobby
-            && engine.owned_lobby(now).is_some_and(|l| request.matches(l))
+    pub fn request(&mut self, request: SlotRequest, engine: &Engine, now: u64) -> bool {
+        if engine.phase != Phase::Lobby
+            || !engine.host_placement_ready(now)
+            || !engine.owned_lobby(now).is_some_and(|l| request.matches(l))
         {
+            return false;
+        }
+        if self.request.is_none() && self.queued.is_empty() {
             self.request = Some((request, now, RefreshGate::default()));
             self.sent = false;
+        } else {
+            if self.queued.len() >= 24 {
+                return false;
+            }
+            self.queued.push_back((request, now));
         }
+        true
     }
 
     pub fn advance(
@@ -169,6 +192,21 @@ impl PendingSlot {
         idle: bool,
         alias: bool,
     ) -> (Vec<Command>, Option<String>) {
+        if self.request.is_none()
+            && let Some((request, queued_at)) = self.queued.pop_front()
+        {
+            // Manual edits take priority over further automatic closures. Never
+            // apply a queued snapshot to a changed player, lobby or game phase.
+            if now.saturating_sub(queued_at) >= 30
+                || engine.phase != Phase::Lobby
+                || !engine.host_placement_ready(now)
+                || !engine.owned_lobby(now).is_some_and(|l| request.matches(l))
+            {
+                return (vec![], Some(request.rejected_notice()));
+            }
+            self.request = Some((request, now, RefreshGate::default()));
+            self.sent = false;
+        }
         let Some((request, started, gate)) = self.request.as_mut() else {
             return (vec![], None);
         };
@@ -176,6 +214,7 @@ impl PendingSlot {
         let applied = self.sent && roster && lobby.is_some_and(|l| request.applied(l));
         let invalid = now.saturating_sub(*started) >= 6
             || engine.phase != Phase::Lobby
+            || !engine.host_placement_ready(now)
             || (!self.sent && !lobby.is_some_and(|l| request.matches(l)));
         if applied || invalid {
             let line = format!(

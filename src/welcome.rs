@@ -1,7 +1,7 @@
 use crate::protocol::{Command, Lobby};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -56,19 +56,31 @@ impl Welcome {
 
 #[derive(Default)]
 pub struct Announcements {
-    queue: VecDeque<String>,
+    queue: VecDeque<(String, Instant)>,
     last_sent: Option<u64>,
+    last_detected: Option<Instant>,
 }
 
 impl Announcements {
     pub fn joined(&mut self, player: &str) {
-        if self.queue.len() < 24 && !self.queue.iter().any(|name| name == player) {
-            self.queue.push_back(player.into());
+        if self.queue.len() < 24 && !self.queue.iter().any(|(name, _)| name == player) {
+            self.queue.push_back((player.into(), Instant::now()));
         }
     }
 
     pub fn left(&mut self, player: &str) {
-        self.queue.retain(|name| name != player);
+        self.queue.retain(|(name, _)| name != player);
+    }
+
+    /// Call only after the native socket accepted the send. This measures local
+    /// submission latency, not delivery to another player's client.
+    pub(crate) fn submission_note(&self) -> Option<String> {
+        self.last_detected.map(|detected| {
+            format!(
+                "Welcome submitted; detection-to-send={} ms",
+                detected.elapsed().as_millis()
+            )
+        })
     }
 
     pub fn next(
@@ -85,7 +97,7 @@ impl Announcements {
         if self.last_sent.is_some_and(|last| now <= last) {
             return None;
         }
-        while let Some(name) = self.queue.pop_front() {
+        while let Some((name, detected)) = self.queue.pop_front() {
             if lobby
                 .players
                 .iter()
@@ -95,7 +107,7 @@ impl Announcements {
                     match lookup.query(&name, now) {
                         Some(text) => text,
                         None => {
-                            self.queue.push_front(name);
+                            self.queue.push_front((name, detected));
                             return None;
                         }
                     }
@@ -103,6 +115,7 @@ impl Announcements {
                     String::new()
                 };
                 self.last_sent = Some(now);
+                self.last_detected = Some(detected);
                 return Some(Command::new(
                     "SendGameChatMessage",
                     json!({"content":settings.render(&name, &stats)}),
@@ -126,6 +139,8 @@ mod tests {
         let mut queue = Announcements::default();
         let mut lookup = crate::ladder::lookup::Lookup::default();
         queue.joined("One");
+        let detected = Instant::now() - std::time::Duration::from_millis(1500);
+        queue.queue.front_mut().unwrap().1 = detected;
         queue.joined("One");
         queue.joined("Two");
         let mut settings = Welcome {
@@ -139,6 +154,10 @@ mod tests {
                 .payload["content"],
             "Hi One"
         );
+        assert_eq!(queue.last_detected, Some(detected));
+        let note = queue.submission_note().unwrap();
+        assert!(note.starts_with("Welcome submitted; detection-to-send="));
+        assert!(!note.contains("One"));
         assert!(queue.next(&roster, &settings, 0, &mut lookup).is_none());
         queue.left("Two");
         assert!(queue.next(&roster, &settings, 1, &mut lookup).is_none());

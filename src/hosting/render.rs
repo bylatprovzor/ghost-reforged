@@ -1,4 +1,4 @@
-//! Pause only in a fresh, owned lobby; never during startup, loading or recovery.
+//! Native creation and a fresh owned lobby can pause CEF after authentication.
 use crate::engine::{Engine, Phase};
 
 pub(super) fn pause_browser(engine: &Engine, identity_ready: bool, now: u64) -> bool {
@@ -6,6 +6,10 @@ pub(super) fn pause_browser(engine: &Engine, identity_ready: bool, now: u64) -> 
         && identity_ready
         && matches!(engine.phase, Phase::Lobby | Phase::Countdown(_))
         && engine.owned_lobby(now).is_some()
+}
+
+pub(super) fn pause_creation(engine: &Engine) -> bool {
+    engine.config.headless && matches!(engine.phase, Phase::Creating(_))
 }
 
 #[cfg(test)]
@@ -67,6 +71,46 @@ mod tests {
         let mut engine = Engine::new(Config::default());
         engine.phase = Phase::Lobby;
         assert!(!pause_browser(&engine, true, 0));
+    }
+
+    #[test]
+    fn creation_pause_starts_only_after_online_proof_and_ends_on_failure() {
+        let mut engine = Engine::new(Config {
+            headless: true,
+            maps: vec!["map.w3x".into()],
+            ..Config::default()
+        });
+        engine.expect_client_initialization();
+        assert!(!pause_creation(&engine));
+        engine.on_event(&json!({"messageType":"GameList","payload":{"games":[]}}), 0);
+        assert!(!pause_creation(&engine));
+        engine.on_event(
+            &json!({"messageType":"UpdateUserInfo","payload":{"user":{"isAuthenticated":true}}}),
+            1,
+        );
+        assert!(!pause_creation(&engine));
+        let commands = engine.on_event(&json!({"messageType":"OnNetProviderInitialized","payload":{"message":{"isOnline":true,"provider":"BattleNet"}}}), 2);
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.message == "CreateLobby")
+        );
+        assert!(pause_creation(&engine));
+        engine.config.headless = false;
+        assert!(!pause_creation(&engine));
+        engine.config.headless = true;
+        engine.on_event(&json!({"messageType":"LoggedOut"}), 3);
+        assert!(!pause_creation(&engine));
+        for phase in [
+            Phase::Lobby,
+            Phase::Starting(0),
+            Phase::InGame,
+            Phase::Recovering(0),
+            Phase::Stopped("test".into()),
+        ] {
+            engine.phase = phase;
+            assert!(!pause_creation(&engine));
+        }
     }
 
     #[test]

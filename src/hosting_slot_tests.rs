@@ -158,3 +158,221 @@ fn automatic_observer_closure_requires_identity_and_cancels_if_a_player_joins() 
     pending.close_empty_observer(&engine, 3);
     assert!(pending.advance(&engine, 3, false, true, true).0.is_empty());
 }
+
+#[test]
+fn observer_destination_is_not_closed_while_the_host_move_is_pending() {
+    let mut engine = ready(false);
+    let mut setup = roster(0, true);
+    setup["payload"]["players"][0]["isObserver"] = json!(false);
+    setup["payload"]["players"][0]["team"] = json!(0);
+    engine.on_event(&setup, 1);
+    let mut pending = slots::PendingSlot::default();
+    for now in 1..5 {
+        // Read-only polls may return the old roster while SetTeam is pending.
+        engine.on_event(&setup, now);
+        pending.close_empty_observer(&engine, now);
+        assert!(
+            pending
+                .advance(&engine, now, true, false, true)
+                .0
+                .is_empty()
+        );
+        assert!(
+            pending
+                .advance(&engine, now, false, true, true)
+                .0
+                .is_empty()
+        );
+    }
+    assert!(
+        dispatch(
+            &mut engine,
+            None,
+            Some(&Control::Slot {
+                slot: 1,
+                open: false
+            }),
+            true,
+            4
+        )
+        .iter()
+        .all(|command| command.message != "CloseSlot")
+    );
+    // The host occupies the observer destination; a different empty observer
+    // can now be closed, but never the just-occupied host slot.
+    setup["payload"]["players"][0]["slot"] = json!(1);
+    setup["payload"]["players"][0]["team"] = json!(24);
+    setup["payload"]["players"][0]["isObserver"] = json!(true);
+    setup["payload"]["players"][1]["slot"] = json!(2);
+    engine.on_event(&setup, 5);
+    pending.close_empty_observer(&engine, 5);
+    assert_eq!(
+        pending.advance(&engine, 5, false, true, true).0[0].message,
+        "SendGameLobbySetup"
+    );
+    pending.advance(&engine, 6, true, false, true);
+    let commands = pending.advance(&engine, 6, false, true, true).0;
+    assert_eq!(commands[0].message, "CloseSlot");
+    assert_eq!(commands[0].payload["slot"], 2);
+}
+
+#[test]
+fn manual_slot_edits_wait_for_host_placement_and_recheck_before_send() {
+    for queued_before_move in [false, true] {
+        let mut engine = ready(false);
+        let mut setup = roster(0, true);
+        engine.on_event(&setup, 1);
+        let close = request(&engine, SlotAction::Close);
+        let mut pending = slots::PendingSlot::default();
+        if queued_before_move {
+            pending.request(close.clone(), &engine, 1);
+            pending.advance(&engine, 1, false, true, true);
+        }
+        setup["payload"]["players"][0]["isObserver"] = json!(false);
+        setup["payload"]["players"][0]["team"] = json!(0);
+        engine.on_event(&setup, 2);
+        if !queued_before_move {
+            pending.request(close, &engine, 2);
+        }
+        assert!(pending.advance(&engine, 2, true, false, true).0.is_empty());
+        assert!(pending.advance(&engine, 2, false, true, true).0.is_empty());
+    }
+}
+
+#[test]
+fn a_manual_computer_request_is_retained_while_an_observer_is_being_closed() {
+    let mut engine = ready(false);
+    let mut setup = roster(0, false);
+    let mut observer = setup["payload"]["players"][1].clone();
+    observer["slot"] = json!(2);
+    observer["team"] = json!(24);
+    observer["isObserver"] = json!(true);
+    setup["payload"]["players"]
+        .as_array_mut()
+        .unwrap()
+        .push(observer);
+    engine.on_event(&setup, 1);
+    let mut pending = slots::PendingSlot::default();
+    pending.close_empty_observer(&engine, 1);
+    pending.advance(&engine, 1, false, true, true);
+    pending.request(request(&engine, SlotAction::Computer), &engine, 1);
+    pending.advance(&engine, 2, true, false, true);
+    assert_eq!(
+        pending.advance(&engine, 2, false, true, true).0[0].message,
+        "CloseSlot"
+    );
+    setup["payload"]["players"][2]["slotStatus"] = json!(1);
+    engine.on_event(&setup, 3);
+    pending.advance(&engine, 3, true, false, true);
+    pending.close_empty_observer(&engine, 3);
+    let query = pending.advance(&engine, 3, false, true, true).0;
+    assert_eq!(query.first().map(|c| c.message), Some("SendGameLobbySetup"));
+    pending.advance(&engine, 4, true, false, true);
+    let command = pending.advance(&engine, 4, false, true, true).0;
+    assert_eq!(command[0].message, "SetComputerSlot");
+    assert_eq!(command[0].payload["slot"], 1);
+}
+
+fn busy_slots() -> (Engine, Value, slots::PendingSlot) {
+    let mut engine = ready(false);
+    let mut setup = roster(0, false);
+    let mut observer = setup["payload"]["players"][1].clone();
+    observer["slot"] = json!(2);
+    observer["team"] = json!(24);
+    observer["isObserver"] = json!(true);
+    setup["payload"]["players"]
+        .as_array_mut()
+        .unwrap()
+        .push(observer);
+    engine.on_event(&setup, 1);
+    let mut pending = slots::PendingSlot::default();
+    pending.close_empty_observer(&engine, 1);
+    pending.advance(&engine, 1, false, true, true);
+    (engine, setup, pending)
+}
+
+#[test]
+fn queued_slot_edits_reject_new_occupants_other_lobbies_countdown_and_expiry() {
+    for change in ["occupant", "lobby", "countdown", "expired"] {
+        let (mut engine, mut setup, mut pending) = busy_slots();
+        assert!(pending.request(request(&engine, SlotAction::Computer), &engine, 1));
+        pending.advance(&engine, 2, true, false, true);
+        pending.advance(&engine, 2, false, true, true);
+        setup["payload"]["players"][2]["slotStatus"] = json!(1);
+        engine.on_event(&setup, 3);
+        pending.advance(&engine, 3, true, false, true);
+        let now = if change == "expired" { 31 } else { 4 };
+        if change == "occupant" {
+            setup["payload"]["players"][1]["slotStatus"] = json!(2);
+        }
+        if change == "lobby" {
+            setup["payload"]["lobbyName"] = json!("Another lobby");
+        }
+        engine.on_event(&setup, now);
+        if change == "countdown" {
+            engine.phase = Phase::Countdown(5);
+        }
+        let (commands, notice) = pending.advance(&engine, now, true, true, true);
+        assert!(commands.is_empty(), "{change}");
+        assert_eq!(
+            notice.as_deref(),
+            Some("Slot 2 · Add computer · not applied"),
+            "{change}"
+        );
+    }
+}
+
+#[test]
+fn queued_edits_keep_fifo_order_ahead_of_automatic_maintenance() {
+    let (mut engine, mut setup, mut pending) = busy_slots();
+    let mut player = setup["payload"]["players"][1].clone();
+    player["slot"] = json!(3);
+    setup["payload"]["players"]
+        .as_array_mut()
+        .unwrap()
+        .push(player);
+    engine.on_event(&setup, 1);
+    assert!(pending.request(request(&engine, SlotAction::Computer), &engine, 1));
+    let close = summarize(engine.owned_lobby(1).unwrap(), false, true)
+        .slot_actions(3)
+        .into_iter()
+        .find(|(action, _)| *action == SlotAction::Close)
+        .unwrap()
+        .1;
+    assert!(pending.request(close, &engine, 1));
+    pending.advance(&engine, 2, true, false, true);
+    pending.advance(&engine, 2, false, true, true);
+    setup["payload"]["players"][2]["slotStatus"] = json!(1);
+    engine.on_event(&setup, 3);
+    pending.advance(&engine, 3, true, false, true);
+    pending.advance(&engine, 3, false, true, true);
+    pending.advance(&engine, 4, true, false, true);
+    assert_eq!(
+        pending.advance(&engine, 4, false, true, true).0[0].message,
+        "SetComputerSlot"
+    );
+    setup["payload"]["players"][1]["slotStatus"] = json!(2);
+    setup["payload"]["players"][1]["slotType"] = json!(1);
+    engine.on_event(&setup, 5);
+    pending.advance(&engine, 5, true, false, true);
+    pending.close_empty_observer(&engine, 5);
+    pending.advance(&engine, 5, false, true, true);
+    pending.advance(&engine, 6, true, false, true);
+    let command = pending.advance(&engine, 6, false, true, true).0;
+    assert_eq!(command[0].message, "CloseSlot");
+    assert_eq!(command[0].payload["slot"], 3);
+}
+
+#[test]
+fn a_busy_slot_queue_is_bounded_and_reports_rejection() {
+    let (engine, _, mut pending) = busy_slots();
+    let request = request(&engine, SlotAction::Computer);
+    for _ in 0..24 {
+        assert!(pending.request(request.clone(), &engine, 1));
+    }
+    assert!(!pending.request(request.clone(), &engine, 1));
+    assert_eq!(
+        request.rejected_notice(),
+        "Slot 2 · Add computer · not applied"
+    );
+}

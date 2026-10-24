@@ -21,7 +21,10 @@ pub struct Args {
     /// Start hosting immediately (in either frontend).
     #[arg(long)]
     pub host: bool,
-    /// Minimize Warcraft and pause its browser only in an owned idle lobby; disable previews.
+    /// Resume the last saved hosting intent; an explicit Stop remains stopped.
+    #[arg(long, conflicts_with = "host")]
+    pub resume: bool,
+    /// Hide Warcraft and pause its browser after authentication during creation and owned lobby observation; disable previews.
     #[arg(long, conflicts_with = "normal")]
     pub headless: bool,
     /// Normal rendering and preview; overrides the saved headless setting.
@@ -36,15 +39,19 @@ pub struct Args {
 
 impl Args {
     pub fn validate(&self) -> Result<(), String> {
+        if self.resume && !self.no_gui {
+            return Err("--resume requires --no-gui".into());
+        }
         if self.command.is_some()
             && (self.profile.is_some()
                 || self.map.is_some()
                 || self.host
+                || self.resume
                 || self.headless
                 || self.normal
                 || self.no_gui)
         {
-            return Err("Startup flags (--profile, --map, --host, --headless, --normal, --no-gui) cannot be combined with a control command. Only --data-dir is shared.".into());
+            return Err("Startup flags (--profile, --map, --host, --resume, --headless, --normal, --no-gui) cannot be combined with a control command. Only --data-dir is shared.".into());
         }
         Ok(())
     }
@@ -54,6 +61,8 @@ impl Args {
 pub enum Command {
     /// Controller state, current lobby and every player's permitted slot actions.
     Status,
+    /// Minimal liveness report without player names, paths, or account data.
+    Health,
     /// Start hosting the selected saved profile on the running controller.
     Host,
     /// Request native lobby closure and stop rehosting (poll status for confirmation).
@@ -108,6 +117,7 @@ impl Command {
     pub fn action(self) -> Result<Action, String> {
         Ok(match self {
             Self::Status => Action::Status,
+            Self::Health => Action::Health,
             Self::Host => Action::Host,
             Self::Stop => Action::Stop,
             Self::Start => Action::Start,

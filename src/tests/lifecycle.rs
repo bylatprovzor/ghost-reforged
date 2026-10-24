@@ -61,7 +61,7 @@ fn empty_lan_and_incomplete_listings_do_not_confirm_battle_net() {
         );
         assert!(engine.on_event(&listing, 5).is_empty());
         assert_eq!(engine.phase, Phase::Initializing(0));
-        engine.tick(30);
+        engine.tick(300);
         assert_eq!(engine.phase, Phase::AwaitSignIn);
     }
 }
@@ -75,7 +75,10 @@ fn public_and_private_lobbies_use_the_same_host_controller() {
         let mut engine = Engine::new(config);
         engine.on_event(&event("GameList", json!({})), 0);
         let commands = engine.on_event(
-            &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+            &event(
+                "OnNetProviderInitialized",
+                json!({"message":{"isOnline":true}}),
+            ),
             0,
         );
         assert_eq!(commands[0].payload["privateGame"], private);
@@ -93,7 +96,7 @@ fn public_and_private_lobbies_use_the_same_host_controller() {
     }
 }
 
-fn observer_starting() -> Engine {
+pub(super) fn observer_starting() -> Engine {
     let mut engine = armed();
     engine.config.host_mode = HostMode::Observer;
     engine.config.leave_on_load = true;
@@ -134,7 +137,10 @@ fn loading_release_is_once_and_requires_a_menu_before_rehosting() {
     let next = engine.on_event(&event("GameList", json!({})), 31);
     assert_eq!(next[0].message, "InitializeNetProvider");
     let created = engine.on_event(
-        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
         32,
     );
     assert_eq!(created[0].payload["gameName"], "GHost Rust #2");
@@ -227,7 +233,7 @@ fn slot_control_cannot_evict_players_or_use_stale_snapshots() {
 }
 
 #[test]
-fn missing_load_exit_acknowledgement_stops_without_creating_another_lobby() {
+fn missing_load_exit_acknowledgement_restarts_only_after_loading_and_timeout() {
     let mut engine = observer_starting();
     engine.on_event(
         &event("SetGlueScreen", json!({"screen":"LOADING_SCREEN"})),
@@ -236,7 +242,8 @@ fn missing_load_exit_acknowledgement_stops_without_creating_another_lobby() {
     assert!(engine.tick(35).is_empty());
     assert_eq!(engine.phase, Phase::Releasing(2));
     assert!(engine.tick(183).is_empty());
-    assert!(matches!(engine.phase, Phase::Stopped(_)));
+    assert_eq!(engine.phase, Phase::Restarting);
+    assert_eq!(engine.number(), 1);
     assert!(
         engine
             .on_event(&event("GameList", json!({})), 184)

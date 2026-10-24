@@ -7,6 +7,7 @@ pub const OBSERVER_TEAM: u8 = 24;
 
 #[derive(Default)]
 pub struct CreationEvidence {
+    requested: bool,
     started: bool,
     entered_lobby: bool,
     result_success: bool,
@@ -23,6 +24,17 @@ pub enum CreationError {
 }
 
 impl CreationEvidence {
+    pub fn requested() -> Self {
+        Self {
+            requested: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn was_requested(&self) -> bool {
+        self.requested
+    }
+
     // Use a fresh instance after each locally issued CreateLobby. A snapshot
     // alone can be a preparation placeholder and is never proof of creation.
     pub fn observe(&mut self, event: &Value) -> Result<(), CreationError> {
@@ -60,7 +72,10 @@ pub fn same_map_path(left: &str, right: &str) -> bool {
 // asynchronous online initialization result. Missing fields are not success.
 pub fn bnet_confirmation(event: &Value) -> Option<bool> {
     match event["messageType"].as_str()? {
-        "OnNetProviderChanged" => Some(event["payload"]["providerId"] == "BNET"),
+        // Selection precedes authentication/initialization and cannot authorize
+        // CreateLobby. A different or malformed provider still revokes readiness.
+        "OnNetProviderChanged" if event["payload"]["providerId"] == "BNET" => None,
+        "OnNetProviderChanged" => Some(false),
         "OnNetProviderInitialized" => Some(event["payload"]["message"]["isOnline"] == true),
         _ => None,
     }
@@ -221,7 +236,7 @@ pub fn create_lobby(config: &Config, number: u32, index: usize) -> Command {
             "settingVisibility": settings.visibility.wire(),
         }
     });
-    if !config.lobby_password.is_empty() {
+    if config.private_game && !config.lobby_password.is_empty() {
         payload["password"] = json!(config.lobby_password);
     }
     Command::new("CreateLobby", payload)

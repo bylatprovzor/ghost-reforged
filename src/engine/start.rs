@@ -5,6 +5,8 @@ pub(super) struct StartRoster {
     players: Vec<Participant>,
     pub manual: bool,
     pub cancel_requested: bool,
+    acknowledged: Option<u64>,
+    cancel_since: Option<u64>,
 }
 
 struct Participant {
@@ -34,7 +36,18 @@ impl StartRoster {
                 .collect(),
             manual,
             cancel_requested: false,
+            acknowledged: None,
+            cancel_since: None,
         }
+    }
+
+    pub fn acknowledge(&mut self, now: u64) {
+        self.acknowledged.get_or_insert(now);
+    }
+
+    pub fn cancel(&mut self, now: u64) {
+        self.cancel_requested = true;
+        self.cancel_since.get_or_insert(now);
     }
 
     pub fn intact(&self, lobby: &Lobby) -> bool {
@@ -77,6 +90,23 @@ impl StartRoster {
 }
 
 impl Engine {
+    pub(super) fn expired_command_budget(&self, now: u64) -> Option<u64> {
+        let command = self.config.command_timeout_seconds;
+        let (since, budget) = match self.phase {
+            Phase::Starting(sent) => match self.start.as_ref() {
+                Some(start) if start.cancel_since.is_some() => (start.cancel_since?, command),
+                Some(start) if start.acknowledged.is_some() => (
+                    start.acknowledged?,
+                    self.config.load_timeout_seconds.max(command),
+                ),
+                _ => (sent, command),
+            },
+            Phase::Leaving(sent) => (sent, command),
+            _ => return None,
+        };
+        (now.saturating_sub(since) >= budget).then_some(budget)
+    }
+
     pub(crate) fn take_notice(&mut self) -> Option<String> {
         self.notice.take()
     }

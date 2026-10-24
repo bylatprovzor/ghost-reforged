@@ -33,7 +33,7 @@ pub(super) fn stop(
     resources: &mut super::supervision::Resources,
     engine: &Engine,
     client: &mut Client,
-    pending: &mut VecDeque<Value>,
+    pending: &mut VecDeque<super::pending::Callback>,
 ) -> Result<(), String> {
     let resumed = resources
         .game
@@ -43,14 +43,17 @@ pub(super) fn stop(
         .identity
         .as_mut()
         .map_or(Ok(()), |identity| identity.cancel_creation());
-    finish(resumed, identity, || close(engine, client, pending))
+    finish(resumed, identity, || {
+        close(engine, client, pending, &resources.progress)
+    })
 }
 
 /// Resolve the current native state before leaving, even if the last roster expired.
 pub(super) fn close(
     engine: &Engine,
     client: &mut Client,
-    pending: &mut VecDeque<Value>,
+    pending: &mut VecDeque<super::pending::Callback>,
+    progress: &super::health::Progress,
 ) -> Result<(), String> {
     let Some(expected) = engine.shutdown_identity() else {
         return Ok(());
@@ -77,20 +80,29 @@ pub(super) fn close(
     client
         .send("SendGameLobbySetup", serde_json::json!({}))
         .map_err(|_| UNCONFIRMED)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(engine.config.command_timeout_seconds);
     while Instant::now() < deadline {
-        if let Some(event) = client.receive().map_err(|_| UNCONFIRMED)? {
+        // This is the worker's bounded native wait, not a frontend liveness pulse.
+        progress.pulse(super::health::Stage::Observing);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Some(event) = client
+            .receive_with_timeout(remaining.min(Duration::from_millis(250)))
+            .map_err(|_| shutdown.unconfirmed("Native connection failed"))?
+        {
             let Some(commands) = shutdown.observe(&event)? else {
                 return Ok(());
             };
             for command in commands {
                 client
                     .send(command.message, command.payload)
-                    .map_err(|_| UNCONFIRMED)?;
+                    .map_err(|_| shutdown.unconfirmed("Native departure command failed"))?;
             }
         }
     }
-    Err(UNCONFIRMED.into())
+    Err(shutdown.unconfirmed("Command deadline expired"))
 }
 
 fn departed(event: &Value) -> bool {
@@ -124,6 +136,15 @@ struct Shutdown {
 }
 
 impl Shutdown {
+    fn unconfirmed(&self, reason: &str) -> String {
+        let awaiting = if self.sent {
+            "departure acknowledgement"
+        } else {
+            "fresh lobby roster"
+        };
+        format!("{UNCONFIRMED} {reason} while awaiting {awaiting}.")
+    }
+
     fn observe(&mut self, event: &Value) -> Result<Option<Vec<Command>>, String> {
         if departed(event) {
             return Ok(None);
@@ -185,54 +206,102 @@ mod tests {
 
     #[test]
     fn stale_roster_shutdown_refreshes_cancels_leaves_and_waits_for_ack() {
-        shutdown_roundtrip(None);
+        shutdown_roundtrip(None, Duration::ZERO, Duration::ZERO, 30).unwrap();
     }
 
     #[test]
     fn stop_during_recovery_backoff_still_closes_the_retained_owned_lobby() {
-        shutdown_roundtrip(Some(crate::engine::Phase::Recovering(100)));
+        shutdown_roundtrip(
+            Some(crate::engine::Phase::Recovering(100)),
+            Duration::ZERO,
+            Duration::ZERO,
+            30,
+        )
+        .unwrap();
     }
 
     #[test]
     fn stop_before_empty_refresh_leave_is_sent_still_departs() {
-        shutdown_roundtrip(Some(crate::engine::Phase::Leaving(100)));
+        shutdown_roundtrip(
+            Some(crate::engine::Phase::Leaving(100)),
+            Duration::ZERO,
+            Duration::ZERO,
+            30,
+        )
+        .unwrap();
     }
 
-    fn shutdown_roundtrip(interrupted: Option<crate::engine::Phase>) {
+    #[test]
+    fn stop_accepts_delayed_roster_within_the_configured_command_budget() {
+        shutdown_roundtrip(None, Duration::from_secs(6), Duration::ZERO, 10).unwrap();
+    }
+
+    #[test]
+    fn recovery_stop_accepts_delayed_departure_within_the_configured_command_budget() {
+        shutdown_roundtrip(
+            Some(crate::engine::Phase::Recovering(100)),
+            Duration::ZERO,
+            Duration::from_secs(6),
+            10,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn stop_still_rejects_departure_after_the_configured_deadline() {
+        let error =
+            shutdown_roundtrip(None, Duration::ZERO, Duration::from_secs(6), 5).unwrap_err();
+        assert!(
+            error.contains("Command deadline expired while awaiting departure acknowledgement")
+        );
+    }
+
+    #[test]
+    fn stop_reports_missing_fresh_roster_separately_from_departure() {
+        let error =
+            shutdown_roundtrip(None, Duration::from_secs(6), Duration::ZERO, 5).unwrap_err();
+        assert!(error.contains("Command deadline expired while awaiting fresh lobby roster"));
+    }
+
+    fn shutdown_roundtrip(
+        interrupted: Option<crate::engine::Phase>,
+        roster_delay: Duration,
+        departure_delay: Duration,
+        command_timeout_seconds: u64,
+    ) -> Result<(), String> {
         use crate::{config::Config, discovery::Endpoint};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
+                .set_read_timeout(Some(Duration::from_secs(12)))
                 .unwrap();
             let mut socket = tungstenite::accept(stream).unwrap();
             for expected in ["SendGameLobbySetup", "LobbyCancel", "LeaveGame"] {
-                let command: Value =
-                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                let Ok(frame) = socket.read() else { return };
+                let command: Value = serde_json::from_str(&frame.into_text().unwrap()).unwrap();
                 assert_eq!(command["message"], expected);
                 if expected == "SendGameLobbySetup" {
-                    socket
-                        .send(tungstenite::Message::Text(
-                            roster("Test #1").to_string().into(),
-                        ))
-                        .unwrap();
+                    std::thread::sleep(roster_delay);
+                    let _ = socket.send(tungstenite::Message::Text(
+                        roster("Test #1").to_string().into(),
+                    ));
                 }
             }
-            socket
-                .send(tungstenite::Message::Text(
-                    json!({"messageType":"MultiplayerGameLeave"})
-                        .to_string()
-                        .into(),
-                ))
-                .unwrap();
+            std::thread::sleep(departure_delay);
+            let _ = socket.send(tungstenite::Message::Text(
+                json!({"messageType":"MultiplayerGameLeave"})
+                    .to_string()
+                    .into(),
+            ));
         });
         let mut engine = Engine::new(Config {
             maps: vec!["map.w3x".into()],
             lobby_name: "Test #{n}".into(),
             first_number: 2,
             resume_lobby: true,
+            command_timeout_seconds,
             ..Config::default()
         });
         engine.on_event(&roster("Test #1"), 0);
@@ -246,10 +315,10 @@ mod tests {
         .unwrap();
         // A previous leave event must not hide the more recent owned roster.
         let mut pending = VecDeque::from([
-            json!({"messageType":"MultiplayerGameLeave"}),
-            roster("Test #1"),
+            json!({"messageType":"MultiplayerGameLeave"}).into(),
+            roster("Test #1").into(),
         ]);
-        if let Some(phase) = interrupted {
+        let result = if let Some(phase) = interrupted {
             let mut resources = super::super::supervision::Resources::default();
             engine.phase = phase;
             let (tx, rx) = std::sync::mpsc::channel();
@@ -262,11 +331,16 @@ mod tests {
                 100,
                 &mut resources,
             ));
-            stop(&mut resources, &engine, &mut client, &mut pending).unwrap();
+            stop(&mut resources, &engine, &mut client, &mut pending)
         } else {
-            close(&engine, &mut client, &mut pending).unwrap();
-        }
+            let progress = super::super::health::Progress::default();
+            let result = close(&engine, &mut client, &mut pending, &progress);
+            assert!(progress.snapshot().age_seconds < 2);
+            result
+        };
+        drop(client);
         server.join().unwrap();
+        result
     }
     #[test]
     fn departure_requires_native_confirmation_and_does_not_repeat_commands() {

@@ -24,8 +24,10 @@ mod native {
         guard: Option<crate::background_window::Guard>,
         audio: Option<crate::background_audio::Guard>,
         render: Option<crate::background_render::Guard>,
+        priority: Option<crate::background_priority::Guard>,
         preview: Option<crate::window_capture::Suppression>,
         process: HANDLE,
+        minimize_window: bool,
     }
 
     pub struct HostLease(HANDLE);
@@ -148,12 +150,13 @@ mod native {
                 guard: None,
                 audio: None,
                 render: None,
+                priority: None,
                 preview: None,
                 process,
+                minimize_window: true,
             })
         }
         pub fn terminate(&mut self) -> Result<(), String> {
-            self.low_resource(false)?;
             // The retained handle identifies this client even if Windows reuses its PID.
             if unsafe { WaitForSingleObject(self.process, 0) } == 0 {
                 self.audio = None;
@@ -175,6 +178,10 @@ mod native {
             {
                 return Err("The retained process is not Warcraft III.".into());
             }
+            // Termination must not depend on a hung window acknowledging a restore.
+            // Closing the guardian pipe releases its suspension lease independently.
+            self.render = None;
+            self.preview = None;
             if unsafe { TerminateProcess(self.process, 0) } == 0
                 || unsafe { WaitForSingleObject(self.process, 5000) } != 0
             {
@@ -196,37 +203,81 @@ mod native {
             self.preview = None;
             self.audio = None;
             self.guard = None;
+            self.priority = None;
+        }
+        pub(crate) fn background_priority(&mut self, headless: bool) -> Result<(), String> {
+            if !headless {
+                self.priority = None;
+            } else {
+                if self.priority.is_none() {
+                    self.priority = Some(crate::background_priority::Guard::new(self.pid)?);
+                }
+                if let Some(priority) = &mut self.priority {
+                    priority.poll()?;
+                }
+            }
+            Ok(())
         }
         pub fn low_resource(&mut self, enabled: bool) -> Result<(), String> {
-            let result = self.apply_low_resource(enabled);
+            self.update_resources(enabled, self.minimize_window)
+        }
+        pub(crate) fn set_minimize_window(&mut self, enabled: bool) {
+            self.minimize_window = enabled;
+        }
+        pub(crate) fn pause_creation(&mut self) -> Result<(), String> {
+            // Authentication is complete. Native creation does not need CEF,
+            // and waiting for minimization can leave software rendering busy.
+            self.update_resources(true, false)
+        }
+        fn update_resources(&mut self, enabled: bool, minimize: bool) -> Result<(), String> {
+            // CEF may spawn or replace children after the native API opens.
+            // Keep tracking them during startup and sign-in as well as in a lobby.
+            if let Some(priority) = &mut self.priority {
+                priority.poll()?;
+            }
+            let result = self.apply_low_resource(enabled, minimize);
             if result.is_err() {
                 // Closing the pipe releases the guardian's lease even after a lost reply.
                 self.render = None;
                 self.preview = None;
-                if let Some(guard) = &self.guard {
+                if self.minimize_window
+                    && let Some(guard) = &self.guard
+                {
                     let _ = guard.minimize(false);
                 }
             }
             result
         }
-        fn apply_low_resource(&mut self, enabled: bool) -> Result<(), String> {
+        fn apply_low_resource(&mut self, enabled: bool, minimize: bool) -> Result<(), String> {
             if enabled {
                 self.hide()?;
+                if minimize
+                    && let Some(guard) = &self.guard
+                    && !guard.try_minimize(true)?
+                {
+                    // Window messages may be slow on software-rendered servers.
+                    // Do not begin a new suspension before minimization. An
+                    // existing creation lease must keep renewing during this
+                    // transition; otherwise CEF resumes after four seconds.
+                    if let Some(render) = &mut self.render {
+                        render.renew_pause()?;
+                    }
+                    return Ok(());
+                }
                 if self.render.is_none() {
                     self.render = Some(crate::background_render::Guard::start(self.pid)?);
                 }
                 if self.preview.is_none() {
                     self.preview = Some(crate::window_capture::Suppression::new(self.pid));
                 }
-                if let Some(guard) = &self.guard {
-                    guard.minimize(true)?;
-                }
             }
             if let Some(render) = &mut self.render {
                 render.set_paused(enabled)?;
             }
             if !enabled {
-                if let Some(guard) = &self.guard {
+                if self.minimize_window
+                    && let Some(guard) = &self.guard
+                {
                     guard.minimize(false)?;
                 }
                 self.preview = None;
@@ -278,6 +329,135 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn slow_minimize_keeps_the_hosting_loop_available_without_suspending_the_browser() {
+            use std::{
+                io::{BufRead, Write},
+                os::windows::process::CommandExt,
+                process::{Command, Stdio},
+            };
+            let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("Warcraft III.exe");
+            std::fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+            let mut child = Command::new(path)
+                .args([
+                    "--exact",
+                    "background_window::tests::window_fixture",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("GHOST_WINDOW_TEST_FIXTURE", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap();
+            let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+            let mut ready = || {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert!(output.read_line(&mut line).unwrap() > 0);
+                    if line.trim().starts_with("WINDOW ") {
+                        break;
+                    }
+                }
+            };
+            ready();
+            let mut background = Background::attach(child.id()).unwrap();
+            background.hide().unwrap();
+            writeln!(child.stdin.as_mut().unwrap(), "block").unwrap();
+            ready();
+            let began = Instant::now();
+            let result = background.low_resource(true);
+            let elapsed = began.elapsed();
+            let unpaused = background.render.is_none();
+            let deadline = Instant::now() + Duration::from_secs(6);
+            let mut minimized = false;
+            while Instant::now() < deadline {
+                if background
+                    .guard
+                    .as_ref()
+                    .unwrap()
+                    .try_minimize(true)
+                    .unwrap_or(false)
+                {
+                    minimized = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // This fixture models only the native window. Browser suspension
+            // and lease recovery are covered by the render-family fixtures.
+            let resumed = background.low_resource(false);
+            // Always dispose the native fixture, including on the red run.
+            let _ = child.kill();
+            let _ = child.wait();
+            assert!(result.is_ok(), "{result:?}");
+            assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
+            assert!(unpaused, "Window readiness must precede browser suspension");
+            assert!(
+                minimized,
+                "The pending native transition must eventually complete"
+            );
+            assert!(resumed.is_ok(), "{resumed:?}");
+        }
+
+        #[test]
+        fn a_hung_window_cannot_prevent_terminating_the_retained_client() {
+            use std::{
+                io::{BufRead, Write},
+                os::windows::process::CommandExt,
+                process::{Command, Stdio},
+            };
+            let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("Warcraft III.exe");
+            std::fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+            let mut child = Command::new(path)
+                .args([
+                    "--exact",
+                    "background_window::tests::window_fixture",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("GHOST_WINDOW_TEST_FIXTURE", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap();
+            let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+            let mut ready = || {
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    assert!(output.read_line(&mut line).unwrap() > 0);
+                    if line.trim().starts_with("WINDOW ") {
+                        break;
+                    }
+                }
+            };
+            ready();
+            let mut background = Background::attach(child.id()).unwrap();
+            background.guard = Some(crate::background_window::Guard::start(child.id()).unwrap());
+            background.guard.as_ref().unwrap().minimize(true).unwrap();
+            writeln!(child.stdin.as_mut().unwrap(), "stall").unwrap();
+            ready();
+            let began = Instant::now();
+            let result = background.terminate();
+            let exited = !background.running();
+            // Clean up the fixture even when the regression fails.
+            let _ = child.kill();
+            let _ = child.wait();
+            assert!(result.is_ok(), "{result:?}");
+            assert!(exited);
+            assert!(began.elapsed() < Duration::from_secs(7));
+        }
+
         #[test]
         fn capture_cannot_block_the_hosting_loop() {
             let _test = crate::background_window::TEST_PRESENTATION.lock().unwrap();
@@ -331,6 +511,10 @@ impl Background {
     pub fn attach(_: u32) -> Result<Self, String> {
         Ok(Self)
     }
+    pub(crate) fn set_minimize_window(&mut self, _: bool) {}
+    pub(crate) fn background_priority(&mut self, _: bool) -> Result<(), String> {
+        Ok(())
+    }
     pub(crate) fn running(&self) -> bool {
         false
     }
@@ -350,6 +534,9 @@ impl Background {
     pub fn reveal(&mut self) {}
     pub fn low_resource(&mut self, _: bool) -> Result<(), String> {
         Ok(())
+    }
+    pub(crate) fn pause_creation(&mut self) -> Result<(), String> {
+        Err("Background hosting requires Windows.".into())
     }
     pub fn terminate(&mut self) -> Result<(), String> {
         Err("Restarting Warcraft III requires Windows.".into())
@@ -378,11 +565,20 @@ pub(crate) fn launch(
 
 #[cfg(windows)]
 pub(crate) use crate::background_launcher::Launch as LauncherLaunch;
+#[cfg(windows)]
+pub(crate) use native::spawn as spawn_hidden;
 #[cfg(not(windows))]
 #[derive(Default)]
 pub(crate) struct LauncherLaunch;
 #[cfg(not(windows))]
 impl LauncherLaunch {
+    pub(crate) fn prepare_start(
+        &mut self,
+        _: &std::sync::atomic::AtomicBool,
+        _: std::time::Instant,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     pub(crate) fn poll(
         &mut self,
         _: &std::sync::atomic::AtomicBool,
@@ -390,14 +586,10 @@ impl LauncherLaunch {
     ) -> Result<(), String> {
         Ok(())
     }
-    pub(crate) fn retry_if_needed(
-        &mut self,
-        _: bool,
-        _: &std::sync::atomic::AtomicBool,
-        _: std::time::Instant,
-    ) -> Result<(), String> {
-        Ok(())
+    pub(crate) fn pending(&self) -> bool {
+        false
     }
+    pub(crate) fn client_observed(&mut self) {}
     pub(crate) fn complete(&mut self) {}
     pub(crate) fn watch(
         &mut self,

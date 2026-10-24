@@ -4,14 +4,25 @@ mod control;
 use control::{Reservation, dispatch, reserve};
 mod connection;
 mod controller;
+mod creation_departure;
+mod creation_recovery;
+mod health;
+pub use health::Health;
 mod kick;
 mod ladder;
+mod login_recovery;
+mod pending;
+mod priority;
 mod render;
+mod render_preparation;
 mod repair;
 mod reporting;
 pub use kick::KickRequest;
 mod slots;
 pub use slots::{SlotAction, SlotRequest};
+mod diagnostics;
+mod session_events;
+mod session_recovery;
 mod settings;
 mod shutdown;
 mod supervision;
@@ -85,6 +96,7 @@ impl Snapshot {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    Diagnostic(String),
     Activity(Activity),
     ClientChanged(Option<u32>),
     VisualChanged,
@@ -99,6 +111,7 @@ pub struct Worker {
     commands: Sender<Control>,
     events: Receiver<Event>,
     stop: Arc<AtomicBool>,
+    progress: health::Progress,
 }
 
 impl Worker {
@@ -109,10 +122,14 @@ impl Worker {
         let (tx, events) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let cancelled = stop.clone();
+        let progress = health::Progress::new(config.startup_timeout_seconds);
+        let worker_progress = progress.clone();
         thread::Builder::new()
             .name("ghost-hosting".into())
             .spawn(move || {
-                let result = controller::run(config, &rx, &tx, &cancelled);
+                let result = supervision::attempt(|| {
+                    controller::run(config, &rx, &tx, &cancelled, worker_progress)
+                });
                 let _ = tx.send(Event::Finished(result));
             })
             .map_err(|_| "The hosting worker could not be started.")?;
@@ -120,6 +137,7 @@ impl Worker {
             commands,
             events,
             stop,
+            progress,
         })
     }
     pub fn send(&self, command: Control) {
@@ -130,6 +148,9 @@ impl Worker {
     }
     pub fn receive(&self) -> Option<Event> {
         self.events.try_recv().ok()
+    }
+    pub fn health(&self) -> Health {
+        self.progress.snapshot()
     }
 }
 

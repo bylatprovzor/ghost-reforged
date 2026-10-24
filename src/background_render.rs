@@ -1,6 +1,6 @@
 //! Reversible browser suspension. A separate process owns all suspend counts so
 //! controller crashes and stalled hosting loops cannot leave the browser frozen.
-mod process;
+pub(crate) mod process;
 mod watchdog;
 
 use std::{
@@ -94,13 +94,19 @@ impl Guard {
                 self.renewed = Instant::now();
                 Ok(())
             }
-            _ => {
+            failure => {
                 // EOF makes the guardian resume even if a response was lost.
                 self.input.take();
-                Err(
-                    "Low-resource rendering could not be confirmed; browser suspension released."
-                        .into(),
-                )
+                let operation = if pause { "pause" } else { "resume" };
+                let reason = match failure {
+                    Ok(b'E') => "native operation failed",
+                    Err(mpsc::RecvTimeoutError::Timeout) => "acknowledgment timed out",
+                    Err(mpsc::RecvTimeoutError::Disconnected) => "guardian exited",
+                    _ => "unexpected acknowledgment",
+                };
+                Err(format!(
+                    "Render {operation}: {reason}; browser suspension released."
+                ))
             }
         }
     }
@@ -111,6 +117,13 @@ impl Guard {
         }
         if self.paused != pause || (pause && self.renewed.elapsed() >= Duration::from_secs(1)) {
             self.request(pause)?;
+        }
+        Ok(())
+    }
+
+    pub fn renew_pause(&mut self) -> Result<(), String> {
+        if self.paused {
+            self.set_paused(true)?;
         }
         Ok(())
     }

@@ -10,7 +10,7 @@ use super::{
 use ghost_reforged::commands::ChatCommand;
 use iced::{
     Element, Fill,
-    widget::{column, container, row, rule, scrollable, text, toggler},
+    widget::{column, container, row, rule, scrollable, text, text_input, toggler},
 };
 
 pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
@@ -59,6 +59,18 @@ pub fn view<'a>(app: &'a App) -> Element<'a, Message> {
                     .size(21)
                     .text_size(14)
                     .on_toggle(Message::Private),
+                if profile.private_game {
+                    column![
+                        muted("Lobby password"),
+                        text_input("3–19 characters", &profile.lobby_password)
+                            .secure(true)
+                            .on_input(|value| Message::Edit(Field::LobbyPassword, value))
+                            .style(p::input),
+                    ]
+                    .spacing(7)
+                } else {
+                    column![]
+                },
                 column![
                     muted("Game speed"),
                     select(

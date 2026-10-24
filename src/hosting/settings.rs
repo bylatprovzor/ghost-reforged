@@ -7,6 +7,7 @@ pub struct LiveSettings {
     pub minimum: u8,
     pub full: bool,
     pub rehost: bool,
+    pub reuse_session: bool,
     pub rehost_delay: u64,
     pub empty_refresh: u64,
     pub commands: CommandSettings,
@@ -28,7 +29,7 @@ impl LiveSettings {
         self.validate()?;
         engine.config.headless = self.headless;
         engine.update_start_rule(self.minimum, self.full);
-        engine.update_rehost(self.rehost, self.rehost_delay, now);
+        engine.update_rehost_policy(self.rehost, self.reuse_session, self.rehost_delay, now);
         engine.config.empty_rehost_seconds = self.empty_refresh;
         engine.config.commands = self.commands.clone();
         engine.config.welcome = self.welcome.clone();

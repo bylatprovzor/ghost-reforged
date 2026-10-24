@@ -10,9 +10,13 @@ use std::{net::TcpListener, path::PathBuf, thread, time::Duration};
 
 mod automatic_recovery;
 mod countdown;
+mod creation;
 mod lifecycle;
+mod private_lobby;
 mod recovery;
 mod session;
+mod session_reuse;
+mod startup_budget;
 
 #[test]
 fn ranked_lobby_names_use_the_real_counter_and_never_send_an_oversized_name() {
@@ -34,7 +38,10 @@ fn ranked_lobby_names_use_the_real_counter_and_never_send_an_oversized_name() {
     let mut engine = Engine::new(settings.clone());
     engine.on_event(&event("GameList", json!({})), 0);
     let command = engine.on_event(
-        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
         0,
     );
     assert_eq!(command[0].message, "CreateLobby");
@@ -47,7 +54,10 @@ fn ranked_lobby_names_use_the_real_counter_and_never_send_an_oversized_name() {
     assert!(
         engine
             .on_event(
-                &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+                &event(
+                    "OnNetProviderInitialized",
+                    json!({"message":{"isOnline":true}})
+                ),
                 0
             )
             .is_empty()
@@ -88,7 +98,10 @@ fn armed() -> Engine {
     );
     assert_eq!(
         engine.on_event(
-            &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+            &event(
+                "OnNetProviderInitialized",
+                json!({"message":{"isOnline":true}})
+            ),
             0
         )[0]
         .message,
@@ -174,10 +187,18 @@ fn creation_settings_follow_native_dropdown_indexes() {
 #[test]
 fn a_configured_password_is_preserved() {
     let mut config = config();
+    config.private_game = true;
     config.lobby_password = "private-test".into();
     assert_eq!(
         protocol::create_lobby(&config, 1, 0).payload["password"],
         "private-test"
+    );
+    config.private_game = false;
+    assert!(
+        protocol::create_lobby(&config, 1, 0)
+            .payload
+            .get("password")
+            .is_none()
     );
 }
 
@@ -185,7 +206,10 @@ fn creating() -> Engine {
     let mut engine = Engine::new(config());
     engine.on_event(&event("GameList", json!({})), 0);
     engine.on_event(
-        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
         0,
     );
     engine
@@ -278,23 +302,23 @@ fn no_commands_before_a_menu_and_bnet_provider_confirmation() {
 }
 
 #[test]
-fn both_native_provider_confirmations_create_only_one_lobby() {
-    let confirmations = [
-        event("OnNetProviderChanged", json!({"providerId":"BNET"})),
-        event(
-            "OnNetProviderInitialized",
-            json!({"message":{"isOnline":true}}),
-        ),
-    ];
-    for confirmation in &confirmations {
+fn provider_selection_never_substitutes_for_online_initialization() {
+    let selected = event("OnNetProviderChanged", json!({"providerId":"BNET"}));
+    let initialized = event(
+        "OnNetProviderInitialized",
+        json!({"message":{"isOnline":true}}),
+    );
+    assert_eq!(protocol::bnet_confirmation(&selected), None);
+    for selected_first in [false, true] {
         let mut engine = Engine::new(config());
-        let commands = engine.on_event(&event("GameList", json!({})), 0);
-        assert_eq!(commands[0].payload, json!({}));
-        assert_eq!(engine.on_event(confirmation, 1)[0].message, "CreateLobby");
-        for duplicate in &confirmations {
-            assert!(engine.on_event(duplicate, 2).is_empty());
+        engine.on_event(&event("GameList", json!({})), 0);
+        if selected_first {
+            assert!(engine.on_event(&selected, 1).is_empty());
         }
-        assert_eq!(engine.phase, Phase::Creating(1));
+        assert_eq!(engine.on_event(&initialized, 2)[0].message, "CreateLobby");
+        assert!(engine.on_event(&selected, 3).is_empty());
+        assert!(engine.on_event(&initialized, 4).is_empty());
+        assert_eq!(engine.phase, Phase::Creating(2));
     }
 }
 
@@ -332,10 +356,15 @@ fn never_adopts_an_existing_lobby_even_if_its_name_matches() {
 
 #[test]
 fn unconfirmed_empty_native_placeholder_is_not_an_invisible_host() {
-    let mut engine = Engine::new(config());
+    let mut settings = config();
+    settings.creation_timeout_seconds = 30;
+    let mut engine = Engine::new(settings);
     engine.on_event(&event("GameList", json!({})), 0);
     engine.on_event(
-        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
         0,
     );
     assert!(engine.on_event(&lobby(vec![]), 1).is_empty());
@@ -479,7 +508,10 @@ fn next_lobby_waits_for_score_screen_cooldown_and_fresh_provider() {
     assert!(engine.tick(1100).is_empty());
     engine.on_event(&event("GameList", json!({})), 1101);
     let commands = engine.on_event(
-        &event("OnNetProviderChanged", json!({"providerId":"BNET"})),
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
         1102,
     );
     assert_eq!(commands[0].payload["gameName"], "GHost Rust #2");

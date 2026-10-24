@@ -6,14 +6,14 @@ if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
 }
 $destination = [IO.Path]::GetFullPath($InstallDirectory)
 $executable = Join-Path $destination 'ghost-reforged.exe'
-$files = @('ghost-reforged.exe', 'ghost-reforged-cli.exe', 'README.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')
+$files = @('ghost-reforged.exe', 'ghost-reforged-cli.exe', 'ghost-reforged-supervisor.exe', 'supervisor.ps1', 'diagnose.ps1', 'configure-host.ps1', 'VPS.md', 'README.md', 'LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt')
 foreach ($file in $files) {
     if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $file) -PathType Leaf)) {
         throw 'Extract the complete Windows ZIP before installing.'
     }
 }
-$programsToReplace = @($executable, (Join-Path $destination 'ghost-reforged-cli.exe'))
-if (@(Get-Process -Name 'ghost-reforged','ghost-reforged-cli' -ErrorAction SilentlyContinue |
+$programsToReplace = @($executable, (Join-Path $destination 'ghost-reforged-cli.exe'), (Join-Path $destination 'ghost-reforged-supervisor.exe'))
+if (@(Get-Process -Name 'ghost-reforged','ghost-reforged-cli','ghost-reforged-supervisor' -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -and [IO.Path]::GetFullPath($_.Path) -iin $programsToReplace }).Count) {
     throw 'Close GHost Reforged before updating it.'
 }

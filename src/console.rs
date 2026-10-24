@@ -1,5 +1,6 @@
 //! Console frontend and same-user local control; never initializes Iced or captures images.
 mod args;
+mod intent;
 #[cfg(windows)]
 mod ipc;
 #[cfg(windows)]
@@ -19,6 +20,7 @@ use std::{
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     Status,
+    Health,
     Host,
     Stop,
     Start,
@@ -149,12 +151,15 @@ impl Action {
 fn serve(args: Args, directory: PathBuf) -> Result<(), String> {
     let mut session = session::Session::open(&directory)?;
     session.configure(&args)?;
+    if intent::quitting(&directory)? {
+        intent::save(&directory, intent::read(&directory)?)?;
+    }
     let server = ipc::Server::start(&directory)?;
     let _interrupts = security::Interrupts::start()?;
     print(
         json!({"controller":"ready", "headless":session.selected().headless, "profile":session.selected().title}),
     )?;
-    if args.host {
+    if args.host || (args.resume && intent::read(&directory)?) {
         session.apply(Action::Host)?;
     }
     let mut shutdown_at = None;
@@ -169,7 +174,7 @@ fn serve(args: Args, directory: PathBuf) -> Result<(), String> {
                 Ok(call) => call,
                 Err(error) => {
                     listener_error = Some(error);
-                    let _ = session.apply(Action::Quit);
+                    session.recover();
                     None
                 }
             }
@@ -202,6 +207,28 @@ fn serve(args: Args, directory: PathBuf) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[cfg(windows)]
+pub fn health(directory: &std::path::Path) -> Result<Health, String> {
+    let value = ipc::request(directory, Action::Health).map_err(|failure| match failure {
+        ipc::Failure::Remote(error) | ipc::Failure::Transport(error) => error,
+    })?;
+    serde_json::from_value(value).map_err(|_| "Invalid controller health response".into())
+}
+
+pub fn quit_requested(directory: &std::path::Path) -> Result<bool, String> {
+    intent::quitting(directory)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Health {
+    pub version: u32,
+    pub pid: u32,
+    pub worker: Option<crate::hosting::Health>,
+    pub hosting_requested: bool,
+    pub quitting: bool,
 }
 
 /// Windows GUI-subsystem executables must attach before parsing console arguments.

@@ -161,3 +161,54 @@ fn a_full_lobby_is_not_cancelled_when_native_rosters_pause_at_the_end_of_countdo
     );
     assert_eq!(engine.phase, Phase::InGame);
 }
+
+#[test]
+fn acknowledged_slow_countdown_uses_the_loading_budget_before_rehosting() {
+    for manual in [false, true] {
+        let (mut engine, _) = ready_start(manual, true);
+        engine.config.leave_on_load = true;
+        engine.config.restart_on_load = true;
+        // Native VPS trace: active at request, locked 16 seconds later, then
+        // our old command timeout interrupted a still-pending transition.
+        engine.on_event(&countdown(true, false), 1);
+        engine.on_event(&countdown(true, true), 17);
+        assert!(engine.tick(31).is_empty());
+        assert_eq!(engine.phase, Phase::Starting(1));
+        assert!(!engine.game_started());
+        engine.on_event(&countdown(false, false), 45);
+        engine.on_event(
+            &event("SetGlueScreen", json!({"screen":"LOADING_SCREEN"})),
+            48,
+        );
+        assert_eq!(engine.phase, Phase::Restarting);
+        assert!(engine.game_started());
+        engine.client_stopped(49);
+        assert!(matches!(engine.phase, Phase::Cooldown(_)));
+        assert_eq!(engine.number(), 2);
+    }
+}
+
+#[test]
+fn repeated_countdown_callbacks_cannot_extend_the_loading_deadline() {
+    let (mut engine, _) = ready_start(true, true);
+    engine.on_event(&countdown(true, false), 2);
+    for now in [17, 31, 100, 181] {
+        assert!(engine.on_event(&countdown(true, true), now).is_empty());
+        assert_eq!(engine.phase, Phase::Starting(1));
+    }
+    assert_eq!(engine.tick(182)[0].message, "SendGameLobbySetup");
+    assert_eq!(engine.phase, Phase::Recovering(182));
+    assert!(!engine.game_started());
+}
+
+#[test]
+fn late_roster_cancellation_has_its_own_short_acknowledgement_deadline() {
+    let (mut engine, mut setup) = ready_start(false, true);
+    engine.on_event(&countdown(true, true), 17);
+    setup["payload"]["players"][4]["slotStatus"] = json!(0);
+    assert_eq!(engine.on_event(&setup, 45)[0].message, "LobbyCancel");
+    assert!(engine.tick(74).is_empty());
+    assert_eq!(engine.tick(75)[0].message, "SendGameLobbySetup");
+    assert_eq!(engine.phase, Phase::Recovering(75));
+    assert!(!engine.game_started());
+}

@@ -24,7 +24,7 @@ pub(super) fn chat_command(
     if matches!(engine.phase, Phase::Starting(_)) {
         settings.0.retain(|c| c.read_only());
     }
-    chat.handle_at(
+    let mut outcome = chat.handle_at(
         event,
         &settings,
         elapsed.as_millis() as u64,
@@ -32,7 +32,18 @@ pub(super) fn chat_command(
             status: &engine.lobby_status(now),
             history,
         },
-    )
+    );
+    if outcome.start && !engine.can_start(now) {
+        outcome.start = false;
+        outcome.reply = Some(Command::new(
+            "SendGameChatMessage",
+            json!({"content":format!(
+                "Vote passed, but start is blocked. {} Vote again once ready.",
+                engine.lobby_status(now)
+            )}),
+        ));
+    }
+    outcome
 }
 
 pub(super) fn dispatch(
@@ -79,13 +90,14 @@ pub(super) fn reserve(
     tx: &Sender<Event>,
     stop: &AtomicBool,
     deferred: &mut VecDeque<Control>,
+    timeout: Duration,
 ) -> Result<Reservation, String> {
     if stop.load(Ordering::SeqCst) {
         return Ok(Reservation::Cancelled);
     }
     tx.send(Event::Reserve(number))
         .map_err(|_| "The launcher closed.")?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if stop.load(Ordering::SeqCst) {
             return Ok(Reservation::Cancelled);

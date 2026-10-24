@@ -1,6 +1,14 @@
 use super::*;
 
 impl Engine {
+    pub(crate) fn host_placement_ready(&self, now: u64) -> bool {
+        self.owned_lobby(now)
+            .and_then(Lobby::local)
+            .is_some_and(|p| {
+                p.slot_status == 2 && (self.config.host_mode != HostMode::Observer || p.is_observer)
+            })
+    }
+
     pub fn lobby_status(&self, now: u64) -> String {
         match self.phase {
             Phase::Starting(_) => {
@@ -33,6 +41,12 @@ impl Engine {
             && lobby.local().is_none_or(|p| !p.is_observer)
         {
             "Waiting for host observer placement.".into()
+        } else if !self.ladder_allows_start(lobby) {
+            if lobby.humans(true) < 4 {
+                "Waiting for four human players before ladder preparation.".into()
+            } else {
+                "Waiting for ladder preparation to finish.".into()
+            }
         } else if !self.config.auto_start {
             "Automatic start is off; waiting for a start vote or the host.".into()
         } else if now < self.retry_start_after {

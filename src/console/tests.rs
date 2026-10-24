@@ -1,4 +1,22 @@
 use super::*;
+
+#[test]
+fn quit_is_durable_even_when_previous_cleanup_failed_and_ipc_failure_is_not_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = session::Session::open(dir.path()).unwrap();
+    session.last_result = Err("Simulated cleanup failure".into());
+    assert!(session.apply(Action::Quit).is_err());
+    assert!(session.quitting);
+    assert!(intent::quitting(dir.path()).unwrap());
+    assert!(!intent::read(dir.path()).unwrap());
+    drop(session);
+    intent::save(dir.path(), true).unwrap();
+    let mut session = session::Session::open(dir.path()).unwrap();
+    session.recover();
+    assert!(session.quitting);
+    assert!(intent::read(dir.path()).unwrap());
+    assert!(!intent::quitting(dir.path()).unwrap());
+}
 use clap::{CommandFactory, Parser};
 
 #[test]
@@ -35,7 +53,8 @@ fn selected_profile_roundtrips_headless_and_unknown_or_invalid_fields_do_not_wri
             title: "VPS".into(),
         })
         .unwrap();
-    session.apply(Action::ProfileSet{profile:None,settings:json!({"headless":true,"players":6,"require_full":false,"welcome":{"enabled":false}})}).unwrap();
+    assert!(session.selected().minimize_window);
+    session.apply(Action::ProfileSet{profile:None,settings:json!({"headless":true,"minimize_window":false,"players":6,"require_full":false,"welcome":{"enabled":false}})}).unwrap();
     let before = std::fs::read(directory.path().join("profiles.json")).unwrap();
     for settings in [
         json!({"players":99}),
@@ -59,6 +78,7 @@ fn selected_profile_roundtrips_headless_and_unknown_or_invalid_fields_do_not_wri
     let session = session::Session::open(directory.path()).unwrap();
     assert_eq!(session.selected().title, "VPS");
     assert!(session.selected().headless);
+    assert!(!session.selected().minimize_window);
     assert_eq!(session.selected().players, 6);
     assert!(!session.selected().welcome.enabled);
 }
@@ -80,13 +100,44 @@ fn repeated_stop_and_quit_preserve_failed_native_departure() {
     let mut session = session::Session::open(directory.path()).unwrap();
     session.last_result = Err("Lobby closure could not be confirmed".into());
     for action in [Action::Stop, Action::Stop, Action::Quit, Action::Quit] {
+        intent::save(directory.path(), true).unwrap();
         assert_eq!(
             session.apply(action).unwrap_err(),
             "Lobby closure could not be confirmed"
         );
+        assert!(!intent::read(directory.path()).unwrap());
     }
     assert!(session.quitting);
     assert!(session.apply(Action::Status).unwrap()["last_error"].is_string());
+}
+
+#[test]
+fn health_contains_no_profile_or_lobby_data_and_cannot_start_hosting() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut session = session::Session::open(directory.path()).unwrap();
+    let value = session.apply(Action::Health).unwrap();
+    let health: Health = serde_json::from_value(value.clone()).unwrap();
+    assert!(!health.hosting_requested);
+    assert!(health.worker.is_none());
+    assert!(value.get("profile").is_none());
+    assert!(value.get("lobby").is_none());
+    assert!(value.get("client_pid").is_none());
+    assert!(!session.running());
+}
+
+#[test]
+fn stop_remains_effective_when_persistence_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    intent::save(directory.path(), true).unwrap();
+    let mut session = session::Session::open(directory.path()).unwrap();
+    let path = directory.path().join("hosting-intent.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(session.apply(Action::Stop).is_err());
+    assert_eq!(
+        session.apply(Action::Health).unwrap()["hosting_requested"],
+        false
+    );
 }
 
 #[test]

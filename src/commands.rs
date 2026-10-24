@@ -231,7 +231,7 @@ impl LobbyCommands {
                 self.votes.insert(key.clone());
                 start = self.votes.len() >= required;
                 if start {
-                    "Vote passed. Starting the countdown.".into()
+                    "Vote passed. Requesting game start.".into()
                 } else {
                     format!(
                         "Start vote: {}/{} needed. Vote with ?votestart.",
@@ -294,7 +294,7 @@ impl LobbyCommands {
                         self.votes.insert(key.clone());
                         start = self.votes.len() >= required;
                         if start {
-                            "Vote passed. Starting the countdown.".into()
+                            "Vote passed. Requesting game start.".into()
                         } else {
                             format!(
                                 "Start vote: {}/{} needed. Vote with ?yes.",

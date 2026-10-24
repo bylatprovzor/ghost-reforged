@@ -3,6 +3,9 @@ use super::*;
 impl Engine {
     /// A retry must reconcile native state before issuing another create/start.
     pub(crate) fn recover(&mut self, now: u64) {
+        if self.session_replaced {
+            return;
+        }
         if matches!(
             self.phase,
             Phase::InGame | Phase::WatchingGame | Phase::Restarting | Phase::Releasing(_)
@@ -12,12 +15,20 @@ impl Engine {
         if self.awaiting_session() || (!self.owned && matches!(self.phase, Phase::Stopped(_))) {
             self.phase = Phase::AwaitMenu;
             self.provider_ready = false;
-            self.menu_required = false;
+            // Reopening the socket cannot acknowledge an unfinished menu.
             self.initialization_required = true;
+            self.authenticated_initialization = false;
             return;
         }
+        if !matches!(self.phase, Phase::Recovering(_)) {
+            self.recovery_idle = self.owned
+                && self.phase == Phase::Lobby
+                && self.start.is_none()
+                && !self.countdown_locked
+                && !self.start_confirmed;
+            self.recovery_cancel = None;
+        }
         self.phase = Phase::Recovering(now);
-        self.recovery_cancel = None;
         self.start = None;
         self.move_sent = None;
     }
@@ -34,6 +45,9 @@ impl Engine {
     pub(super) fn reconcile(&mut self, event: &Value, now: u64) -> Vec<Command> {
         let kind = event["messageType"].as_str().unwrap_or("");
         let payload = &event["payload"];
+        if kind == "LobbyCountdown" && payload["details"]["countdownActive"] == true {
+            self.recovery_idle = false;
+        }
         if kind == "SetGlueScreen" && payload["screen"] == "LOADING_SCREEN" {
             self.phase = if self.owned {
                 Phase::Starting(now)
@@ -103,6 +117,13 @@ impl Engine {
         if named_host {
             self.phase = Phase::Leaving(now);
             return vec![Command::empty("LobbyCancel"), Command::empty("LeaveGame")];
+        }
+        if self.recovery_idle {
+            // No start was outstanding before the socket failed. A fresh matching
+            // roster restores that lobby without a cancel that may never acknowledge.
+            self.phase = Phase::Lobby;
+            self.retry_start_after = now.saturating_add(5);
+            return vec![Command::empty("SendGameLobbySetup")];
         }
         match self.recovery_cancel {
             None => {

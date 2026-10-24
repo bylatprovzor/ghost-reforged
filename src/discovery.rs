@@ -104,6 +104,10 @@ mod native {
         }
     }
 
+    pub(crate) fn has_listener(pid: u32) -> Result<bool, DiscoveryError> {
+        listener_ports(pid).map(|ports| !ports.is_empty())
+    }
+
     fn listener_ports(pid: u32) -> Result<Vec<u16>, DiscoveryError> {
         unsafe {
             let mut size = 0;
@@ -262,7 +266,11 @@ fn build_version(contents: &str) -> Option<String> {
 #[cfg(windows)]
 pub use native::discover;
 #[cfg(windows)]
-pub(crate) use native::process_id;
+pub(crate) use native::{has_listener, process_id};
+#[cfg(not(windows))]
+pub(crate) fn has_listener(_: u32) -> Result<bool, DiscoveryError> {
+    Err(DiscoveryError::Unsupported)
+}
 #[cfg(not(windows))]
 pub(crate) fn process_id() -> Result<u32, DiscoveryError> {
     Err(DiscoveryError::Unsupported)

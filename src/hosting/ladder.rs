@@ -10,6 +10,10 @@ use std::{
     thread,
 };
 
+#[path = "ladder_pending.rs"]
+mod pending;
+use pending::PendingEdit;
+
 #[derive(Default, PartialEq)]
 enum Stage {
     #[default]
@@ -27,6 +31,11 @@ struct Job {
     rx: Receiver<Result<ladder::Prepared, ladder::Error>>,
 }
 
+struct RoomRestore {
+    sent_at: u64,
+    timeout_reported: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     match_id: Option<String>,
@@ -35,14 +44,14 @@ pub(super) struct Seed {
     job: Option<Job>,
     packet: Option<Packet>,
     sequence: u64,
-    awaiting: Option<(u64, u64)>,
+    awaiting: Option<PendingEdit>,
     written: bool,
     notice: Option<String>,
     replies: std::collections::VecDeque<String>,
     reply_at: u64,
     began: u64,
     expires_at: Option<u64>,
-    room_awaiting: Option<(u64, u64)>,
+    room_awaiting: Option<RoomRestore>,
 }
 
 fn humans(lobby: &Lobby) -> Option<[&Player; 4]> {
@@ -69,7 +78,8 @@ fn humans(lobby: &Lobby) -> Option<[&Player; 4]> {
 fn roster_key(lobby: &Lobby) -> Option<String> {
     let rows = humans(lobby)?;
     Some(format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{}",
+        ladder::uses_mmr_packet(&lobby.map_data.map_name),
         lobby.map_data.map_path,
         lobby.lobby_name,
         rows.iter()
@@ -104,7 +114,7 @@ fn four_teams(lobby: &Lobby) -> bool {
 }
 
 fn computer_row<'a>(lobby: &'a Lobby, packet: &Packet, index: usize) -> Option<&'a Player> {
-    if matches!(packet.handicaps[0], 45 | 46) {
+    if matches!(packet.handicaps[0], 43..=46) {
         lobby.players.iter().find(|p| {
             p.slot as usize == index + 4 && p.slot_type == 1 && p.slot_status == 2 && !p.is_observer
         })
@@ -213,7 +223,13 @@ impl Seed {
     }
 
     fn sent(&mut self, now: u64, mut commands: Vec<Command>) -> Vec<Command> {
-        self.awaiting = Some((self.sequence, now));
+        self.awaiting = Some(PendingEdit::new(
+            self.sequence,
+            now,
+            &commands[0],
+            &self.stage,
+            self.packet.as_ref(),
+        ));
         commands.push(Command::empty("SendGameLobbySetup"));
         commands
     }
@@ -231,7 +247,10 @@ impl Seed {
         let Some(lobby) = engine.owned_lobby(now) else {
             return Vec::new();
         };
-        if !identity_ok || !ladder::matches_map(&lobby.map_data.map_name) {
+        if !identity_ok
+            || !engine.host_placement_ready(now)
+            || !ladder::matches_map(&lobby.map_data.map_name)
+        {
             return Vec::new();
         }
         // Unlocked custom forces retain their seats but Warcraft opens the AI
@@ -246,19 +265,24 @@ impl Seed {
                 if !quiet {
                     return Vec::new();
                 }
-                if let Some((sequence, at)) = self.room_awaiting {
-                    if now.saturating_sub(at) >= 8 {
+                if let Some(pending) = &mut self.room_awaiting {
+                    if !pending.timeout_reported
+                        && now.saturating_sub(pending.sent_at)
+                            >= engine.config.creation_timeout_seconds
+                    {
+                        pending.timeout_reported = true;
                         self.notice = Some(
                             "Warcraft did not restore the ranked map's computer slots.".into(),
                         );
-                        return Vec::new();
                     }
-                    if self.sequence <= sequence {
-                        return Vec::new();
-                    }
+                    // A new callback can still describe the old native state.
+                    // Never recreate pending AIs on each unchanged/partial reply.
+                    return Vec::new();
                 }
-                let began = self.room_awaiting.map_or(now, |(_, at)| at);
-                self.room_awaiting = Some((self.sequence, began));
+                self.room_awaiting = Some(RoomRestore {
+                    sent_at: now,
+                    timeout_reported: false,
+                });
                 let mut commands: Vec<_> = empty
                     .into_iter()
                     .map(|p| Command::new("SetComputerSlot", json!({"slot":p.slot,"difficulty":1})))
@@ -266,7 +290,9 @@ impl Seed {
                 commands.push(Command::empty("SendGameLobbySetup"));
                 return commands;
             }
-            self.room_awaiting = None;
+            if quiet {
+                self.room_awaiting = None;
+            }
         }
         let Some(key) = roster_key(lobby) else {
             self.key.clear();
@@ -285,17 +311,18 @@ impl Seed {
             self.expires_at = None;
         }
         if !matches!(self.stage, Stage::Ready | Stage::Unavailable)
-            && now.saturating_sub(self.began) >= 120
+            && now.saturating_sub(self.began) >= engine.config.creation_timeout_seconds.max(120)
         {
             self.fail("Ladder preparation timed out; skipping the intro.");
         }
-        if let Some((sequence, at)) = self.awaiting {
-            if now.saturating_sub(at) >= 8 {
-                self.fail("Warcraft did not confirm the ladder lobby settings.");
-            } else if !quiet || self.sequence <= sequence {
-                return Vec::new();
-            } else {
+        if let Some(pending) = &self.awaiting {
+            if quiet && self.sequence > pending.sequence && pending.confirmed(lobby) {
                 self.awaiting = None;
+            } else if now.saturating_sub(pending.sent_at) >= engine.config.creation_timeout_seconds
+            {
+                self.fail("Warcraft did not confirm the ladder lobby settings.");
+            } else {
+                return Vec::new();
             }
         }
         if !quiet {
@@ -353,21 +380,25 @@ impl Seed {
                             }
                         }
                         Err(mpsc::TryRecvError::Disconnected) => {
+                            let current_job = job.key == self.key;
                             self.job = None;
-                            self.fail("Ladder request failed.");
+                            if current_job {
+                                self.fail("Ladder request failed.");
+                            }
                         }
                         Err(mpsc::TryRecvError::Empty) => {}
                     }
                 } else {
                     let tags = humans(lobby).unwrap().map(|p| p.name.clone());
                     let regions = humans(lobby).unwrap().map(ladder::Region::from_player);
+                    let map_name = lobby.map_data.map_name.clone();
                     let (tx, rx) = mpsc::channel();
                     self.job = Some(Job {
                         key: self.key.clone(),
                         rx,
                     });
                     thread::spawn(move || {
-                        let _ = tx.send(ladder::prepare(&tags, &regions));
+                        let _ = tx.send(ladder::prepare_for_map(&tags, &regions, &map_name));
                     });
                 }
                 Vec::new()
@@ -413,7 +444,7 @@ impl Seed {
                     Command::new("SetRace", json!({"slot":p.slot,"raceId":s.race})),
                     Command::new("SetHandicap", json!({"slot":p.slot,"handicap":s.handicap})),
                 ];
-                if !matches!(packet.handicaps[0], 45 | 46) {
+                if !matches!(packet.handicaps[0], 43..=46) {
                     commands.push(Command::new(
                         "SetTeam",
                         json!({"slot":p.slot,"team":s.team}),
@@ -442,7 +473,7 @@ impl Seed {
                 }
                 self.stage = Stage::Ready;
                 self.notice = Some(
-                    if packet.handicaps[0] == 46
+                    if matches!(packet.handicaps[0], 44 | 46)
                         || (packet.handicaps[0] == 47 && packet.handicaps[1] == 84)
                     {
                         "Ladder profiles and result ticket confirmed for all four players."

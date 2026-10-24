@@ -22,6 +22,8 @@ pub(super) struct Session {
     events: VecDeque<Value>,
     began: Instant,
     reserved: Option<u32>,
+    hosting_requested: bool,
+    recovering: bool,
     pub quitting: bool,
     pub last_result: Result<(), String>,
 }
@@ -40,6 +42,8 @@ impl Session {
             events: VecDeque::new(),
             began: Instant::now(),
             reserved: None,
+            hosting_requested: super::intent::read(directory)?,
+            recovering: false,
             quitting: false,
             last_result: Ok(()),
         })
@@ -49,6 +53,15 @@ impl Session {
     }
     pub fn running(&self) -> bool {
         self.worker.is_some()
+    }
+    pub fn recover(&mut self) {
+        // An IPC failure is not a user Stop. Retain the durable hosting intent
+        // so the independent supervisor can restore control of this session.
+        self.recovering = true;
+        self.quitting = true;
+        if let Some(worker) = &self.worker {
+            worker.send(Control::Stop);
+        }
     }
     fn commit(&mut self, profiles: Profiles) -> Result<(), String> {
         self.store.save(&profiles).map_err(|e| e.to_string())?;
@@ -94,6 +107,7 @@ impl Session {
                 break;
             };
             match event {
+                Event::Diagnostic(message) => self.record("native", &message),
                 Event::ClientChanged(pid) => self.pid = pid,
                 Event::VisualChanged => {} // No preview request, window capture, or renderer.
                 Event::Status(status) => {
@@ -115,6 +129,16 @@ impl Session {
                     }
                 }
                 Event::Finished(result) => {
+                    let result = result.and_then(|()| {
+                        if self.quitting {
+                            Ok(())
+                        } else {
+                            super::intent::save(&self.directory, false)
+                        }
+                    });
+                    if result.is_ok() && !self.recovering {
+                        self.hosting_requested = false;
+                    }
                     self.status = if result.is_ok() {
                         "Stopped"
                     } else {
@@ -158,14 +182,29 @@ impl Session {
     }
     pub fn apply(&mut self, action: Action) -> Result<Value, String> {
         self.poll();
-        if self.quitting && !matches!(action, Action::Status | Action::Events | Action::Quit) {
+        if self.quitting
+            && !matches!(
+                action,
+                Action::Status | Action::Health | Action::Events | Action::Quit
+            )
+        {
             return Err("Controller is shutting down".into());
         }
         match action {
             Action::Status => Ok(self.snapshot()),
+            Action::Health => serde_json::to_value(super::Health {
+                version: 1,
+                pid: std::process::id(),
+                worker: self.worker.as_ref().map(Worker::health),
+                hosting_requested: self.hosting_requested,
+                quitting: self.quitting && !self.recovering,
+            })
+            .map_err(|_| "Cannot encode controller health".into()),
             Action::Host => {
                 self.stopped()?;
                 let config = self.selected().config(&self.directory)?;
+                super::intent::save(&self.directory, true)?;
+                self.hosting_requested = true;
                 self.worker = Some(Worker::start(config)?);
                 self.reserved = None;
                 self.last_result = Ok(());
@@ -173,6 +212,12 @@ impl Session {
                 Ok(json!({"accepted":"host","confirmed":false}))
             }
             Action::Stop | Action::Quit => {
+                let saved = if matches!(action, Action::Quit) {
+                    super::intent::quit(&self.directory)
+                } else {
+                    super::intent::save(&self.directory, false)
+                };
+                self.hosting_requested = false;
                 if matches!(action, Action::Quit) {
                     self.quitting = true;
                 }
@@ -182,6 +227,7 @@ impl Session {
                 } else {
                     self.last_result.clone()?;
                 }
+                saved?;
                 Ok(json!({"accepted":"stop","confirmed":!self.running(),"quitting":self.quitting}))
             }
             Action::Start => {
@@ -308,13 +354,14 @@ impl Session {
             "players",
             "require_full",
             "rehost",
+            "reuse_session",
             "rehost_delay_seconds",
             "empty_rehost_seconds",
             "commands",
             "welcome",
         ];
         if live && object.keys().any(|k| !LIVE.contains(&k.as_str())) {
-            return Err("These settings require Stop first; live fields: headless, title, players, require_full, rehost, rehost_delay_seconds, empty_rehost_seconds, commands, welcome".into());
+            return Err("These settings require Stop first; live fields: headless, title, players, require_full, rehost, reuse_session, rehost_delay_seconds, empty_rehost_seconds, commands, welcome".into());
         }
         if object.contains_key("auto_start")
             || object.contains_key("bot_name")

@@ -1,5 +1,39 @@
 use super::*;
 
+#[test]
+fn adopting_a_client_does_not_create_on_provider_selection_alone() {
+    for menu_first in [false, true] {
+        let mut engine = Engine::new(config());
+        engine.on_event(&event("GameList", json!({"games":[]})), 0);
+        let menu = event("SetGlueScreen", json!({"screen":"MAIN_MENU"}));
+        if menu_first {
+            engine.on_event(&menu, 1);
+        }
+        let selected = event("OnNetProviderChanged", json!({"providerId":"BNET"}));
+        assert!(
+            engine.on_event(&selected, 2).is_empty(),
+            "Selecting Battle.net does not establish a server connection"
+        );
+        if !menu_first {
+            assert!(engine.on_event(&menu, 3).is_empty());
+        }
+        assert!(
+            engine
+                .on_event(&event("GameList", json!({"games":[]})), 4)
+                .is_empty()
+        );
+        let initialized = event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        );
+        let commands = engine.on_event(&initialized, 5);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].message, "CreateLobby");
+        assert!(engine.on_event(&selected, 6).is_empty());
+        assert!(engine.on_event(&initialized, 7).is_empty());
+    }
+}
+
 fn online() -> Value {
     event(
         "GameList",
@@ -14,9 +48,9 @@ fn sign_in_can_complete_after_a_long_wait_without_repeated_initialization() {
         engine.on_event(&event("GameList", json!({"games":[]})), 0)[0].message,
         "InitializeNetProvider"
     );
-    assert!(engine.tick(31).is_empty());
+    assert!(engine.tick(301).is_empty());
     assert_eq!(engine.phase, Phase::AwaitSignIn);
-    for time in [60, 120, 600] {
+    for time in [360, 420, 600] {
         assert!(engine.tick(time).is_empty());
         assert!(
             engine
@@ -132,14 +166,10 @@ fn observer_leaves_at_countdown_completion_without_waiting_for_loading() {
     assert_eq!(engine.on_event(&done, 7)[0].message, "LeaveGame");
     assert_eq!(engine.phase, Phase::Releasing(7));
     assert!(engine.on_event(&done, 7).is_empty());
-    assert!(
-        engine
-            .on_event(
-                &event("SetGlueScreen", json!({"screen":"LOADING_SCREEN"})),
-                8
-            )
-            .is_empty()
-    );
+    assert!(engine.on_event(
+        &event("SetGlueScreen", json!({"screen":"LOADING_SCREEN"})), 8
+    ).is_empty());
+    assert_eq!(engine.phase, Phase::Releasing(7));
     let commands = engine.on_event(
         &event("SetGlueScreen", json!({"screen":"SCORE_SCREEN"})),
         10,
@@ -229,10 +259,7 @@ fn restart_never_closes_a_client_whose_host_is_still_a_player() {
 fn a_fresh_client_waits_for_initialization_not_just_provider_selection() {
     let mut engine = Engine::new(config());
     engine.expect_client_initialization();
-    assert_eq!(
-        engine.on_event(&online(), 0)[0].message,
-        "InitializeNetProvider"
-    );
+    assert!(engine.on_event(&online(), 0).is_empty());
     assert!(
         engine
             .on_event(
@@ -250,4 +277,68 @@ fn a_fresh_client_waits_for_initialization_not_just_provider_selection() {
     );
     assert_eq!(engine.on_event(&initialized, 3)[0].message, "CreateLobby");
     assert!(engine.on_event(&initialized, 4).is_empty());
+}
+
+#[test]
+fn late_authentication_does_not_reinitialize_an_online_provider() {
+    let authenticated = event("UpdateUserInfo", json!({"user":{"isAuthenticated":true}}));
+    let initialized = event(
+        "OnNetProviderInitialized",
+        json!({"message":{"isOnline":true}}),
+    );
+    for fresh in [false, true] {
+        for auth_first in [false, true] {
+            let mut engine = Engine::new(config());
+            if fresh {
+                engine.expect_client_initialization();
+            }
+            engine.on_event(&event("GameList", json!({"games":[]})), 0);
+            engine.on_event(&event("SetGlueScreen", json!({"screen":"LOGIN_DOORS"})), 1);
+            let callbacks = if auth_first {
+                [&authenticated, &initialized]
+            } else {
+                [&initialized, &authenticated]
+            };
+            for (index, callback) in callbacks.into_iter().enumerate() {
+                let commands = engine.on_event(callback, index as u64 + 2);
+                if fresh || !auth_first || index == 1 {
+                    assert!(
+                        commands.is_empty(),
+                        "Online initialization must have a single owner"
+                    );
+                } else {
+                    assert_eq!(commands.len(), 1);
+                    assert_eq!(commands[0].message, "InitializeNetProvider");
+                }
+            }
+            assert!(engine.on_event(&authenticated, 4).is_empty());
+            assert!(
+                engine.on_event(&online(), 5).is_empty(),
+                "Login menu still blocks creation"
+            );
+            engine.on_event(&event("SetGlueScreen", json!({"screen":"MAIN_MENU"})), 6);
+            assert_eq!(engine.on_event(&online(), 7)[0].message, "CreateLobby");
+        }
+    }
+}
+
+#[test]
+fn authentication_can_initialize_again_after_confirmed_sign_out() {
+    let mut engine = Engine::new(config());
+    let authenticated = event("UpdateUserInfo", json!({"user":{"isAuthenticated":true}}));
+    engine.expect_client_initialization();
+    engine.on_event(&event("GameList", json!({"games":[]})), 0);
+    engine.on_event(&event("SetGlueScreen", json!({"screen":"LOGIN_DOORS"})), 1);
+    engine.on_event(
+        &event(
+            "OnNetProviderInitialized",
+            json!({"message":{"isOnline":true}}),
+        ),
+        2,
+    );
+    assert!(engine.on_event(&authenticated, 3).is_empty());
+    engine.on_event(&event("LoggedOut", json!({})), 4);
+    let commands = engine.on_event(&authenticated, 5);
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].message, "InitializeNetProvider");
 }

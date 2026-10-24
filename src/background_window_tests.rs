@@ -80,6 +80,12 @@ fn window_fixture() {
                     thread::sleep(Duration::from_secs(4));
                     continue;
                 }
+                "stall" => {
+                    println!("WINDOW {}", window as usize);
+                    std::io::stdout().flush().unwrap();
+                    thread::sleep(Duration::from_secs(10));
+                    continue;
+                }
                 "perpixel" => unsafe {
                     SetWindowLongPtrW(
                         window,

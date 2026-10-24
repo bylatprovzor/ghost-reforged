@@ -39,6 +39,7 @@ struct StartedGame {
 
 struct Snapshot {
     name: String,
+    mmr: bool,
     number: u32,
     match_id: Option<String>,
     players: Vec<Player>,
@@ -55,16 +56,11 @@ pub(super) struct Reporter {
 
 impl Reporter {
     pub(super) fn open(config: &Config) -> Result<Option<Self>, String> {
-        let Ok(key) = std::env::var("W3LADDER_COLLECTOR_KEY") else {
+        let Some(key) =
+            ladder::credential::read().map_err(|_| "Game reporting credential is unavailable.")?
+        else {
             return Ok(None);
         };
-        if !(43..=128).contains(&key.len())
-            || !key
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-        {
-            return Err("Game reporting credential is invalid.".into());
-        }
         let mode = match std::env::var("W3LADDER_MODE").as_deref() {
             Ok("preview") => return Ok(None),
             Ok("test") => "test",
@@ -129,6 +125,7 @@ impl Reporter {
         }
         self.snapshot = Some(Snapshot {
             name: lobby.lobby_name.clone(),
+            mmr: ladder::uses_mmr_packet(&lobby.map_data.map_name),
             number,
             match_id: match_id.map(str::to_owned),
             players,
@@ -161,8 +158,13 @@ impl Reporter {
             bot_id: self.bot_id.clone(),
             bot_name: "GHost Reforged".into(),
             game_name: snapshot.name.clone(),
-            map_name: ladder::MAP_NAME.into(),
-            map_version: "1.59".into(),
+            map_name: if snapshot.mmr {
+                ladder::MAP_NAME
+            } else {
+                ladder::LEGACY_MAP_NAME
+            }
+            .into(),
+            map_version: if snapshot.mmr { "1.59a" } else { "1.59" }.into(),
             started_at_ms: at,
             mode: self.mode.clone(),
             players: snapshot.players.clone(),

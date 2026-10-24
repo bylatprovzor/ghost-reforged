@@ -294,6 +294,160 @@ fn status_explains_threshold_full_lobby_and_manual_waiting_conditions() {
 }
 
 #[test]
+fn start_vote_reports_ladder_gate_instead_of_promising_a_countdown() {
+    for players in [3, 4] {
+        for final_vote in ["?votestart", "?yes", "?yes start"] {
+            let mut engine = ready(true);
+            let mut setup = lobby(true);
+            setup["payload"]["mapData"]["mapName"] = json!(crate::ladder::MAP_NAME);
+            for slot in 2..=players {
+                let mut player = setup["payload"]["players"][1].clone();
+                player["slot"] = json!(slot);
+                player["team"] = json!(slot - 1);
+                player["name"] = json!(format!("Player{slot}"));
+                setup["payload"]["players"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(player);
+            }
+            engine.on_event(&setup, 1);
+            assert!(!engine.can_start(1));
+            let mut chat = Chat::new(None);
+            let needed = players / 2 + 1;
+            let mut actions = Vec::new();
+            for vote in 1..=needed {
+                let mut event = message(if vote == needed {
+                    final_vote
+                } else {
+                    "?votestart"
+                });
+                if vote > 1 {
+                    event["payload"]["message"]["sender"] = json!(format!("Player{vote}"));
+                }
+                let outcome = chat.process(
+                    &engine,
+                    Some(&event),
+                    true,
+                    Duration::from_secs(1 + vote),
+                    &mut actions,
+                );
+                assert!(!outcome.start, "blocked vote must not request start");
+            }
+            let last = actions.last().unwrap().payload["content"].as_str().unwrap();
+            assert!(last.contains("start is blocked"), "{last}");
+            assert!(!last.contains("Starting the countdown"), "{last}");
+            assert!(
+                last.contains(if players == 3 {
+                    "four human players"
+                } else {
+                    "ladder preparation"
+                }),
+                "{last}"
+            );
+            assert!(actions.iter().all(|c| c.message == "SendGameChatMessage"));
+            assert_eq!(engine.phase, Phase::Lobby);
+
+            // An unblocked vote remains a request; native acknowledgement comes later.
+            if players == 4 {
+                engine.set_ladder_ready(true);
+                let outcome = chat.process(
+                    &engine,
+                    Some(&message(final_vote)),
+                    true,
+                    Duration::from_secs(5),
+                    &mut actions,
+                );
+                assert!(outcome.start);
+                assert!(
+                    actions.last().unwrap().payload["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Requesting game start")
+                );
+                assert_eq!(engine.start_now(5)[0].message, "LobbyStart");
+            }
+        }
+    }
+}
+
+#[test]
+fn start_vote_still_requests_native_start_on_non_ladder_maps() {
+    for final_vote in ["?votestart", "?yes", "?yes start"] {
+        let mut engine = ready(true);
+        let mut setup = lobby(true);
+        let mut player = setup["payload"]["players"][1].clone();
+        player["slot"] = json!(2);
+        player["name"] = json!("Player2");
+        setup["payload"]["players"]
+            .as_array_mut()
+            .unwrap()
+            .push(player);
+        engine.on_event(&setup, 1);
+        let mut chat = Chat::new(None);
+        let mut actions = Vec::new();
+        assert!(
+            !chat
+                .process(
+                    &engine,
+                    Some(&message("?votestart")),
+                    true,
+                    Duration::from_secs(1),
+                    &mut actions,
+                )
+                .start
+        );
+        let mut vote = message(final_vote);
+        vote["payload"]["message"]["sender"] = json!("Player2");
+        let outcome = chat.process(
+            &engine,
+            Some(&vote),
+            true,
+            Duration::from_secs(2),
+            &mut actions,
+        );
+        assert!(outcome.start);
+        assert!(
+            actions.last().unwrap().payload["content"]
+                .as_str()
+                .unwrap()
+                .contains("Requesting game start")
+        );
+        assert_eq!(engine.start_now(2)[0].message, "LobbyStart");
+    }
+}
+
+#[test]
+fn ladder_wait_reason_counts_a_playing_host_even_when_auto_start_does_not() {
+    let mut engine = ready(true);
+    engine.config.host_mode = crate::config::HostMode::Player;
+    engine.config.count_host = false;
+    let mut setup = lobby(true);
+    setup["payload"]["mapData"]["mapName"] = json!(crate::ladder::MAP_NAME);
+    setup["payload"]["players"][0]["isObserver"] = json!(false);
+    setup["payload"]["players"][0]["team"] = json!(3);
+    for slot in 2..=3 {
+        let mut player = setup["payload"]["players"][1].clone();
+        player["slot"] = json!(slot);
+        player["team"] = json!(slot - 1);
+        player["name"] = json!(format!("Player{slot}"));
+        setup["payload"]["players"]
+            .as_array_mut()
+            .unwrap()
+            .push(player);
+    }
+    engine.on_event(&setup, 1);
+    let status = engine.lobby_status(1);
+    assert!(
+        status.contains("Waiting for ladder preparation to finish"),
+        "{status}"
+    );
+    assert!(
+        !status.contains("Waiting for four human players"),
+        "{status}"
+    );
+}
+
+#[test]
 fn live_statistics_follow_the_confirmed_game_activity_and_ignore_cancelled_countdowns() {
     let mut engine = ready(true);
     let mut chat = Chat::new(None);

@@ -254,13 +254,25 @@ impl Guard {
         self.restore_visibility.store(false, Ordering::SeqCst);
     }
 
-    pub fn minimize(&self, enabled: bool) -> Result<(), String> {
+    /// Entering the optional low-resource mode must not block native lobby I/O.
+    /// A pending request leaves rendering active until a later poll confirms it.
+    pub fn try_minimize(&self, enabled: bool) -> Result<bool, String> {
+        self.check()?;
+        let previous = self.minimized.ticket();
         let ticket = self.minimized.request(enabled);
-        if !self.minimized.ready(ticket) {
+        if previous != ticket {
+            // One notification per transition. The worker's timer retries while
+            // Windows is busy; socket polling must not flood its message queue.
             unsafe {
                 PostThreadMessageW(self.thread_id, REFRESH, 0, 0);
             }
         }
+        Ok(self.minimized.ready(ticket))
+    }
+
+    pub fn minimize(&self, enabled: bool) -> Result<(), String> {
+        self.try_minimize(enabled)?;
+        let ticket = self.minimized.ticket();
         let deadline = Instant::now() + Duration::from_secs(2);
         while !self.minimized.ready(ticket) {
             self.check()?;

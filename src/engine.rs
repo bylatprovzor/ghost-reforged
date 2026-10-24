@@ -5,7 +5,9 @@ use crate::{
 };
 use serde_json::{Value, json};
 mod lifecycle;
+mod departure;
 mod recovery;
+mod session;
 mod start;
 mod status;
 use start::StartRoster;
@@ -46,11 +48,15 @@ pub struct Engine {
     start_confirmed: bool,
     menu_required: bool,
     initialization_required: bool,
+    native_initialization: bool,
+    authenticated_initialization: bool,
     cancelled_roster: Option<String>,
     recovery_cancel: Option<u64>,
+    recovery_idle: bool,
     retry_start_after: u64,
     notice: Option<String>,
     ladder_ready: bool,
+    session_replaced: bool,
 }
 
 impl Engine {
@@ -73,11 +79,15 @@ impl Engine {
             start_confirmed: false,
             menu_required: false,
             initialization_required: false,
+            native_initialization: false,
+            authenticated_initialization: false,
             cancelled_roster: None,
             recovery_cancel: None,
+            recovery_idle: false,
             retry_start_after: 0,
             notice: None,
             ladder_ready: false,
+            session_replaced: false,
         }
     }
 
@@ -112,8 +122,12 @@ impl Engine {
     }
 
     pub fn update_rehost(&mut self, enabled: bool, delay: u64, now: u64) {
+        self.update_rehost_policy(enabled, false, delay, now);
+    }
+
+    pub fn update_rehost_policy(&mut self, enabled: bool, reuse_session: bool, delay: u64, now: u64) {
         self.config.leave_on_load = enabled;
-        self.config.restart_on_load = enabled;
+        self.config.restart_on_load = enabled && !reuse_session;
         self.config.max_games = if enabled {
             0
         } else {
@@ -133,11 +147,35 @@ impl Engine {
         if matches!(self.phase, Phase::Stopped(_)) {
             return Vec::new();
         }
+        if self.departure_replaced(event) {
+            self.session_replaced = true;
+            self.owned = false;
+            self.latest = None;
+            self.start = None;
+            self.start_confirmed = false;
+            self.countdown_locked = false;
+            self.stop("Native activity replaced the departing observer session; preserving Warcraft III");
+            return Vec::new();
+        }
+        // Online creation may expose its roster before reporting a rejection.
+        // The result still belongs to our request after Lobby or native Leave,
+        // and must be checked before reconnect reconciliation can adopt it.
+        if event["messageType"] == "MultiplayerGameCreateResult"
+            && self.creation.was_requested()
+            && !self.game_started()
+            && let Err(error) = self.creation.observe(event)
+        {
+            self.stop(&error.to_string());
+            return Vec::new();
+        }
         if matches!(self.phase, Phase::Recovering(_)) {
             return self.reconcile(event, now);
         }
         let kind = event["messageType"].as_str().unwrap_or("");
         let payload = &event["payload"];
+        if let Some(commands) = self.authentication(event, now) {
+            return commands;
+        }
         if !self.owned
             && (self.awaiting_session() || self.phase == Phase::WatchingGame)
             && kind == "SetGlueScreen"
@@ -157,6 +195,15 @@ impl Engine {
         }
         if kind == "OnNetProviderInitialized" && protocol::bnet_confirmation(event) == Some(true) {
             self.initialization_required = false;
+            self.native_initialization = false;
+        }
+        if self.awaiting_session()
+            && kind == "SetGlueScreen"
+            && matches!(payload["screen"].as_str(), Some("LOGIN_DOORS" | "LOGIN"))
+        {
+            // Multiplayer can become online before the login menu finishes.
+            // Keep CEF active until native menu readiness, including on retry.
+            self.menu_required = true;
         }
         if kind == "SetGlueScreen"
             && matches!(
@@ -187,6 +234,7 @@ impl Engine {
         }
         match kind {
             "LoggedOut" => {
+                self.authenticated_initialization = false;
                 self.provider_ready = false;
                 self.menu_required = true;
                 if !(matches!(self.phase, Phase::InGame | Phase::Releasing(_))
@@ -198,8 +246,7 @@ impl Engine {
             "GameList" if self.awaiting_session() && !self.menu_required => {
                 if self.initialization_required {
                     if self.phase == Phase::AwaitMenu {
-                        self.phase = Phase::Initializing(now);
-                        return vec![Command::empty("InitializeNetProvider")];
+                        return self.initialize_provider(now);
                     }
                     return Vec::new();
                 }
@@ -211,8 +258,7 @@ impl Engine {
                         return self.create(now);
                     }
                     if self.phase == Phase::AwaitMenu {
-                        self.phase = Phase::Initializing(now);
-                        return vec![Command::empty("InitializeNetProvider")];
+                        return self.initialize_provider(now);
                     }
                 }
             }
@@ -227,7 +273,7 @@ impl Engine {
                     if !self.menu_required {
                         return self.create(now);
                     }
-                } else {
+                } else if protocol::bnet_confirmation(event) == Some(false) {
                     self.provider_ready = false;
                     self.phase = Phase::AwaitSignIn;
                 }
@@ -298,6 +344,9 @@ impl Engine {
                     if matches!(self.phase, Phase::Lobby | Phase::Countdown(_)) {
                         self.begin_start(now, true);
                     }
+                    if let Some(start) = &mut self.start {
+                        start.acknowledge(now);
+                    }
                     self.countdown_locked |= payload["details"]["countdownLocked"] == true;
                 }
                 if payload["details"]["countdownActive"] == false
@@ -324,9 +373,13 @@ impl Engine {
                         self.countdown_locked = false;
                         self.phase = Phase::Lobby;
                     } else if self.config.leave_on_load
-                        && self.config.host_mode == HostMode::Observer
                         && !self.config.restart_on_load
+                        && self.config.host_mode == HostMode::Observer
+                        && self.latest.as_ref().and_then(|(lobby, _)| lobby.local())
+                            .is_some_and(|p| p.slot_status == 2 && p.is_observer)
                     {
+                        // The locked countdown has completed without cancellation.
+                        // Leave before map loading blocks native command dispatch.
                         self.phase = Phase::Releasing(now);
                         return vec![Command::empty("LeaveGame")];
                     }
@@ -392,7 +445,7 @@ impl Engine {
             return Vec::new();
         }
         self.phase = Phase::Creating(now);
-        self.creation = protocol::CreationEvidence::default();
+        self.creation = protocol::CreationEvidence::requested();
         vec![protocol::create_lobby(
             &self.config,
             self.number,
@@ -450,7 +503,7 @@ impl Engine {
 
     pub fn slot_command(&self, slot: u8, open: bool, now: u64) -> Option<Command> {
         let lobby = self.owned_lobby(now)?;
-        if !matches!(self.phase, Phase::Lobby) {
+        if !matches!(self.phase, Phase::Lobby) || !self.host_placement_ready(now) {
             return None;
         }
         let player = lobby.players.iter().find(|p| p.slot == slot)?;
@@ -465,7 +518,7 @@ impl Engine {
 
     pub fn tick(&mut self, now: u64) -> Vec<Command> {
         if let Phase::Initializing(sent) = self.phase
-            && now.saturating_sub(sent) >= self.config.command_timeout_seconds
+            && now.saturating_sub(sent) >= self.config.startup_timeout_seconds
         {
             self.phase = Phase::AwaitSignIn;
             return Vec::new();
@@ -474,18 +527,28 @@ impl Engine {
             Phase::Releasing(sent)
                 if now.saturating_sub(sent) >= self.config.load_timeout_seconds =>
             {
-                self.stop("Observer departure was not confirmed before the loading timeout");
+                // Releasing requires a confirmed native start with our host
+                // in an observer slot. Fall back to the same owned-client
+                // restart path when its native return to menu fails.
+                self.phase = Phase::Restarting;
                 return Vec::new();
             }
-            Phase::Initializing(sent)
-            | Phase::Creating(sent)
-            | Phase::Starting(sent)
-            | Phase::Leaving(sent)
-                if now.saturating_sub(sent) >= self.config.command_timeout_seconds =>
+            Phase::Creating(sent)
+                if now.saturating_sub(sent) >= self.config.creation_timeout_seconds =>
+            {
+                self.notice = Some(format!(
+                    "Lobby creation timed out after {} s; reconciling the lobby.",
+                    self.config.creation_timeout_seconds
+                ));
+                self.recover(now);
+                return vec![Command::empty("SendGameLobbySetup")];
+            }
+            Phase::Starting(_) | Phase::Leaving(_)
+                if let Some(budget) = self.expired_command_budget(now) =>
             {
                 self.notice = Some(format!(
                     "Native command timed out in {:?} after {} s; reconciling the lobby.",
-                    self.phase, self.config.command_timeout_seconds
+                    self.phase, budget
                 ));
                 self.recover(now);
                 return vec![Command::empty("SendGameLobbySetup")];
@@ -563,7 +626,7 @@ impl Engine {
                         )
                 ));
                 if let Some(start) = &mut self.start {
-                    start.cancel_requested = true;
+                    start.cancel(now);
                 }
                 // Remain Starting until Warcraft acknowledges cancellation.
                 return vec![Command::empty("LobbyCancel")];

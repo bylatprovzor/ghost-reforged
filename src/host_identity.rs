@@ -74,11 +74,8 @@ impl<F: SendFilter> Identity<F> {
         Ok(true)
     }
 
-    pub fn check_timeout(&mut self) -> Result<(), String> {
-        if self
-            .creating
-            .is_some_and(|since| since.elapsed() > Duration::from_secs(30))
-        {
+    pub fn check_timeout(&mut self, budget: Duration) -> Result<(), String> {
+        if self.creating.is_some_and(|since| since.elapsed() >= budget) {
             self.cancel_creation()?;
             return Err("The game did not confirm a blank host name.".into());
         }

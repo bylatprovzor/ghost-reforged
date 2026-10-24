@@ -50,6 +50,7 @@ impl App {
                 break;
             };
             match event {
+                Event::Diagnostic(_) => {}
                 Event::ClientChanged(pid) => {
                     self.client_pid = pid;
                     self.preview

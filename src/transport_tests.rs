@@ -2,6 +2,48 @@ use super::*;
 use std::{net::TcpListener, sync::mpsc, thread};
 
 #[test]
+fn handshake_failures_distinguish_refusal_from_timeout_without_exposing_the_session() {
+    use std::io::{Read, Write};
+    for refuse in [true, false] {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done, wait) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            if refuse {
+                stream
+                    .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    .unwrap();
+            } else {
+                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        });
+        let error = match Client::connect(&Endpoint {
+            pid: 0,
+            ports: vec![port],
+            session: "private-session-value".into(),
+            version: None,
+        }) {
+            Ok(_) => panic!("Unresponsive or rejecting listener was accepted"),
+            Err(error) => error,
+        };
+        if refuse {
+            assert!(matches!(error, TransportError::HandshakeRejected(403)));
+        } else {
+            assert!(matches!(error, TransportError::HandshakeTimeout));
+            done.send(()).unwrap();
+        }
+        assert!(!error.to_string().contains("private-session-value"));
+        server.join().unwrap();
+    }
+}
+
+#[test]
 fn keepalives_do_not_mark_a_queued_roster_as_idle() {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

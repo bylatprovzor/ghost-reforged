@@ -4,3 +4,6 @@
 *.pdb
 profiles.json
 launcher.lock
+.env
+.env.*
+!.env.example

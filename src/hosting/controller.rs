@@ -12,13 +12,17 @@ pub(super) fn run(
     rx: &Receiver<Control>,
     tx: &Sender<Event>,
     stop: &AtomicBool,
+    progress: health::Progress,
 ) -> Result<(), String> {
     let _lease = background::HostLease::acquire()?;
     if stop.load(Ordering::SeqCst) {
         return Ok(());
     }
     let mut repair = repair::Repair::default();
-    let mut resources = supervision::Resources::default();
+    let mut resources = supervision::Resources {
+        progress,
+        ..Default::default()
+    };
     let mut retry = supervision::Retry::default();
     let mut engine = Engine::new(config);
     let mut reporter = reporting::Reporter::open(&engine.config)?;
@@ -43,7 +47,8 @@ pub(super) fn run(
     }
     let mut client = connection.client;
     let mut pending = connection.pending;
-    let mut connected = Instant::now();
+    let mut session_wait = connection::SessionWait::default();
+    let mut session_events = session_events::Events::default();
     let mut requested = Instant::now();
     let mut reported = String::new();
     let mut snapshot = None;
@@ -62,6 +67,7 @@ pub(super) fn run(
     let mut slot_edit = slots::PendingSlot::default();
     let mut ladder_seed = ladder::Seed::default();
     loop {
+        resources.progress.pulse(health::Stage::Observing);
         let step = supervision::attempt(|| -> Result<Step, String> {
             let game = resources
                 .game
@@ -71,10 +77,11 @@ pub(super) fn run(
                 .identity
                 .as_mut()
                 .ok_or("Host identity is unavailable")?;
+            priority::observe(game, &engine, identity_ok, started.elapsed().as_secs())?;
             resources
                 .launcher
                 .watch(stop, Instant::now() + Duration::from_secs(2))?;
-            identity.check_timeout()?;
+            identity.check_timeout(Duration::from_secs(engine.config.creation_timeout_seconds))?;
             let now = started.elapsed().as_secs();
             if let Some(reporter) = &reporter {
                 while let Some(notice) = reporter.notice() {
@@ -86,7 +93,7 @@ pub(super) fn run(
                 let resumed = game.low_resource(false);
                 let restored = identity.cancel_creation();
                 return Ok(Step::Shutdown(shutdown::finish(resumed, restored, || {
-                    shutdown::close(&engine, &mut client, &mut pending)
+                    shutdown::close(&engine, &mut client, &mut pending, &resources.progress)
                 })));
             }
             if let Some(Control::Settings(settings)) = &control {
@@ -101,24 +108,64 @@ pub(super) fn run(
             if matches!(control, Some(Control::Start)) {
                 start_requested = Some(now);
             }
-            let event = if let Some(event) = pending.pop_front() {
+            let event = if let Some(mut event) = pending.pop_front() {
+                repair.inspect_pending(&mut event);
+                resources
+                    .login_recovery
+                    .observe_pending(&mut event, Instant::now());
                 Some(event)
             } else {
-                client
+                let event = client
                     .receive_with_timeout(Duration::from_millis(50))
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())?;
+                event.map(|value| {
+                    let mut event = pending::Callback::from(value);
+                    repair.inspect_pending(&mut event);
+                    resources
+                        .login_recovery
+                        .observe_pending(&mut event, Instant::now());
+                    event
+                })
             };
+            let event = event.map(|event| {
+                if event["messageType"] == "LoggedOut" {
+                    resources.login_recovery.disconnected_idle_lobby(
+                        &engine,
+                        identity_ok,
+                        now,
+                        event.session_epoch,
+                    );
+                }
+                event.value
+            });
+            if let Some(event) = &event {
+                if let Some(message) = diagnostics::callback(event) {
+                    let _ = tx.send(Event::Diagnostic(message));
+                }
+                session_wait.observe(event, Instant::now());
+                if let Some(notice) = session_events.observe(event) {
+                    let _ = tx.send(Event::Activity(Activity::Command(notice.into())));
+                }
+            }
             if event.as_ref().is_some_and(|e| {
                 e["messageType"] == "GameLobbySetup" && !HostIdentity::matches(&e["payload"])
             }) {
                 identity_ok = false;
             }
-            let repair_lobby =
-                if let Some(candidate) = repair.observe(&engine.phase, event.as_ref(), now) {
-                    repair.confirm(&candidate, &mut client, &mut pending, tx, stop)?
-                } else {
-                    false
-                };
+            let repair_lobby = if let Some(candidate) =
+                repair.observe_dispatched(&engine.phase, event.as_ref(), now)
+            {
+                repair.confirm_with_recovery(
+                    &candidate,
+                    &mut client,
+                    &mut pending,
+                    tx,
+                    stop,
+                    &mut resources.login_recovery,
+                )?
+            } else {
+                false
+            };
             let mut commands = if repair_lobby {
                 Vec::new()
             } else {
@@ -140,6 +187,12 @@ pub(super) fn run(
             };
             if let Some(notice) = engine.take_notice() {
                 let _ = tx.send(Event::Activity(Activity::Command(notice)));
+            }
+            if engine.session_replaced() {
+                if let Phase::Stopped(reason) = &engine.phase {
+                    let _ = tx.send(Event::Activity(Activity::Command(reason.clone())));
+                }
+                return Ok(Step::Stop);
             }
             if !matches!(
                 engine.phase,
@@ -188,8 +241,12 @@ pub(super) fn run(
             if let Some(Control::Kick(target)) = &control {
                 manual_kick.request(target.clone(), &engine, now);
             }
-            if let Some(Control::EditSlot(request)) = &control {
-                slot_edit.request(request.clone(), &engine, now);
+            if let Some(Control::EditSlot(request)) = &control
+                && !slot_edit.request(request.clone(), &engine, now)
+            {
+                let _ = tx.send(Event::Activity(Activity::Command(
+                    request.rejected_notice(),
+                )));
             }
             if identity_ok && event.is_none() {
                 slot_edit.close_empty_observer(&engine, now);
@@ -287,12 +344,13 @@ pub(super) fn run(
                 }
             }
             publish_lobby(&engine, identity_ok, now, &mut snapshot, tx);
+            retry.observe(&engine, identity_ok, now, Instant::now());
             if repair_lobby || engine.phase == Phase::Restarting {
                 if stop.load(Ordering::SeqCst) {
                     let resumed = game.low_resource(false);
                     let restored = identity.cancel_creation();
                     return Ok(Step::Shutdown(shutdown::finish(resumed, restored, || {
-                        shutdown::close(&engine, &mut client, &mut pending)
+                        shutdown::close(&engine, &mut client, &mut pending, &resources.progress)
                     })));
                 }
                 status(
@@ -323,11 +381,20 @@ pub(super) fn run(
                 }
                 return Ok(Step::Reconnect);
             }
-            // Resume is acknowledged before LobbyStart (manual, chat or automatic),
-            // creation, departure, or any loading/recovery transition can proceed.
-            game.low_resource(render::pause_browser(&engine, identity_ok, now))?;
+            // Resume before start, departure or recovery. Creation starts its
+            // bounded render lease only after the durable number is reserved.
+            if render::pause_creation(&engine)
+                && !commands
+                    .iter()
+                    .any(|command| command.message == "CreateLobby")
+            {
+                game.pause_creation()?;
+            } else {
+                game.low_resource(render::pause_browser(&engine, identity_ok, now))?;
+            }
             for command in commands {
                 if command.message == "CreateLobby" {
+                    resources.login_recovery.creation_requested();
                     if let Some(reporter) = &mut reporter {
                         reporter.clear();
                     }
@@ -336,7 +403,15 @@ pub(super) fn run(
                     identity_ok = false;
                     let number = engine.number();
                     if reserved != Some(number) {
-                        match reserve(number, rx, tx, stop, &mut deferred_controls) {
+                        resources.progress.pulse(health::Stage::Saving);
+                        match reserve(
+                            number,
+                            rx,
+                            tx,
+                            stop,
+                            &mut deferred_controls,
+                            Duration::from_secs(engine.config.creation_timeout_seconds),
+                        ) {
                             Ok(Reservation::Cancelled) => return Ok(Step::Stop),
                             Ok(Reservation::Saved) => {}
                             Err(error) => {
@@ -355,18 +430,53 @@ pub(super) fn run(
                     let resumed = game.low_resource(false);
                     let restored = identity.cancel_creation();
                     return Ok(Step::Shutdown(shutdown::finish(resumed, restored, || {
-                        shutdown::close(&engine, &mut client, &mut pending)
+                        shutdown::close(&engine, &mut client, &mut pending, &resources.progress)
                     })));
                 }
-                if command.message == "CreateLobby"
-                    && let Err(error) = identity.begin_creation()
-                {
-                    engine.retry_incomplete_lobby(); // CreateLobby was not sent.
-                    return Err(error);
+                if command.message == "CreateLobby" {
+                    let prepared = identity.begin_creation().and_then(|()| {
+                        if !render::pause_creation(&engine) {
+                            return Ok(true);
+                        }
+                        render_preparation::prepare(
+                            stop,
+                            Duration::from_secs(30),
+                            || game.pause_creation(),
+                            |error| {
+                                let _ = tx.send(Event::Diagnostic(format!(
+                                    "{error} Retrying render setup before creation."
+                                )));
+                            },
+                        )
+                    });
+                    match prepared {
+                        Ok(true) => {}
+                        Ok(false) => return Ok(Step::Stop),
+                        Err(error) => {
+                            engine.retry_incomplete_lobby(); // CreateLobby was not sent.
+                            return Err(error);
+                        }
+                    }
                 }
+                if command.message == "CreateLobby" {
+                    if stop.load(Ordering::SeqCst) {
+                        return Ok(Step::Stop);
+                    }
+                    repair.creation_started(Duration::from_secs(
+                        engine.config.creation_timeout_seconds,
+                    ));
+                }
+                let diagnostic = diagnostics::command(&command);
+                let creation = super::creation_recovery::Request::from_command(&command);
                 client
                     .send(command.message, command.payload)
                     .map_err(|e| e.to_string())?;
+                if let Some(creation) = creation {
+                    repair.creation_sent(creation);
+                }
+                if let Some(message) = diagnostic {
+                    let _ = tx.send(Event::Diagnostic(message));
+                }
             }
             publish_lobby(
                 &engine,
@@ -384,6 +494,9 @@ pub(super) fn run(
                 client
                     .send(command.message, command.payload)
                     .map_err(|e| e.to_string())?;
+                if let Some(note) = announcements.submission_note() {
+                    let _ = tx.send(Event::Diagnostic(note));
+                }
             }
             if !matches!(engine.phase, Phase::AwaitSignIn | Phase::Stopped(_)) {
                 game.hide()?;
@@ -392,8 +505,25 @@ pub(super) fn run(
             if phase != reported {
                 status(tx, &phase);
                 reported = phase;
-                if engine.phase == Phase::AwaitSignIn {
-                    return Err("Battle.net sign-in has not completed yet.".into());
+            }
+            let recover_startup = resources.login_recovery.confirm(
+                game.pid(),
+                &mut client,
+                &mut pending,
+                stop,
+                Duration::from_secs(engine.config.startup_timeout_seconds),
+            )?;
+            if let Some(message) = resources.login_recovery.diagnostic(game.pid()) {
+                let _ = tx.send(Event::Diagnostic(message));
+            }
+            if recover_startup {
+                identity.cancel_creation()?;
+                if !stop.load(Ordering::SeqCst) {
+                    game.terminate()?;
+                    return Err(
+                        "The requested client cannot recover its session. Restarting through Battle.net."
+                            .into(),
+                    );
                 }
             }
             if let Phase::Stopped(reason) = &engine.phase {
@@ -402,10 +532,12 @@ pub(super) fn run(
                 }
                 return Err(reason.clone());
             }
-            if (engine.awaiting_session() || matches!(engine.phase, Phase::Recovering(_)))
-                && connected.elapsed() >= Duration::from_secs(60)
-            {
-                return Err("Waiting for a fresh Battle.net session.".into());
+            if !resources.login_recovery.awaiting_session_reply(game.pid()) {
+                session_wait.check(
+                    &engine.phase,
+                    Instant::now(),
+                    Duration::from_secs(engine.config.startup_timeout_seconds),
+                )?;
             }
             if requested.elapsed() >= snapshot_interval(&engine) {
                 if engine.wants_snapshot() {
@@ -446,7 +578,7 @@ pub(super) fn run(
                     let _ = identity.cancel_creation();
                 }
                 engine.recover(started.elapsed().as_secs());
-                let delay = retry.delay(connected.elapsed());
+                let delay = retry.delay();
                 status(
                     tx,
                     &format!("{error} Retrying automatically in {} s…", delay.as_secs()),
@@ -494,7 +626,7 @@ pub(super) fn run(
         }
         client = connection.client;
         pending = connection.pending;
-        connected = Instant::now();
+        session_wait = connection::SessionWait::default();
         requested = Instant::now();
         reported.clear();
         let _ = tx.send(Event::ClientChanged(

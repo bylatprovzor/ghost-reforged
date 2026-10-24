@@ -1,4 +1,6 @@
 //! Suppress only the verified Battle.net executable during a bot-requested launch.
+mod readiness;
+use crate::background_render::process::{Process, same_path};
 use crate::background_window::Guard;
 use std::{
     collections::HashMap,
@@ -9,18 +11,67 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    System::{Diagnostics::ToolHelp::*, Threading::*},
+    System::{Diagnostics::ToolHelp::*, RemoteDesktop::ProcessIdToSessionId},
 };
 
 #[derive(Default)]
 pub(crate) struct Launch {
     path: Option<PathBuf>,
     guards: HashMap<u32, Guard>,
-    retry: Retry,
+    request: Request,
     polled: Option<Instant>,
+    startup: readiness::Generation,
 }
 
 impl Launch {
+    pub(crate) fn prepare_start(
+        &mut self,
+        stop: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let Some(root) = std::env::var_os("ProgramFiles(x86)") else {
+            return Ok(());
+        };
+        let launcher = PathBuf::from(root).join("Battle.net/Battle.net.exe");
+        if !launcher.is_file() {
+            return Ok(());
+        }
+        self.prepare(&launcher, stop, deadline)?;
+        if stop.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let mut bare_start_requested = false;
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            self.poll(stop, deadline)?;
+            let launchers = processes(&launcher)?;
+            // A short-lived --exec process may coexist with the main launcher.
+            // The oldest matching process in our session owns initialization.
+            if let Some(process) = launchers.iter().min_by_key(|process| process.created) {
+                bare_start_requested = true;
+                if self.startup.ready(process.pid, process.created) && process.running() {
+                    return Ok(());
+                }
+            } else {
+                // Discard readiness from a launcher that has exited. A controller
+                // restart also reconstructs this evidence from the native lifetime.
+                self.startup = readiness::Generation::default();
+                if !bare_start_requested {
+                    // Cold --exec may be consumed before GameController exists.
+                    crate::background::spawn_hidden(&launcher, "")?;
+                    bare_start_requested = true;
+                }
+            }
+            if Instant::now() >= deadline {
+                // No game command has been sent. A launcher that is absent can
+                // safely receive a fresh bare startup on the next attempt.
+                return Err("Battle.net has not completed startup yet.".into());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
     #[cfg(test)]
     pub(crate) fn with_test_guard(pid: u32, guard: Guard) -> Self {
         Self {
@@ -50,7 +101,10 @@ impl Launch {
             return Ok(());
         };
         self.guards.retain(|_, guard| guard.check().is_ok());
-        for pid in processes(expected)? {
+        let processes = processes(expected)?;
+        self.request.observe_launcher(!processes.is_empty());
+        for process in processes {
+            let pid = process.pid;
             if let std::collections::hash_map::Entry::Vacant(entry) = self.guards.entry(pid) {
                 entry.insert(
                     Guard::start_until(pid, stop, deadline)
@@ -71,27 +125,19 @@ impl Launch {
     }
 
     pub(crate) fn requested(&mut self) {
-        self.retry.requested(Instant::now());
+        self.request = Request {
+            pending: true,
+            launcher_seen: false,
+        };
     }
 
-    pub(crate) fn retry_if_needed(
-        &mut self,
-        game_absent: bool,
-        stop: &AtomicBool,
-        deadline: Instant,
-    ) -> Result<(), String> {
-        let now = Instant::now();
-        if !stop.load(Ordering::SeqCst)
-            && now < deadline
-            && self.retry.due(game_absent, now)
-            && let Some(path) = &self.path
-        {
-            // A cold Battle.net can consume --exec before its game catalog is
-            // ready. Repeat only until a Warcraft process has been observed.
-            crate::background::spawn(path, "--exec=\"launch W3\"")?;
-            self.requested();
-        }
-        Ok(())
+    pub(crate) fn pending(&self) -> bool {
+        self.request.pending
+    }
+
+    pub(crate) fn client_observed(&mut self) {
+        self.request = Request::default();
+        self.startup = readiness::Generation::default();
     }
 
     pub(crate) fn complete(&mut self) {
@@ -105,25 +151,30 @@ impl Launch {
 }
 
 #[derive(Default)]
-struct Retry {
-    next: Option<Instant>,
-    game_seen: bool,
+struct Request {
+    pending: bool,
+    launcher_seen: bool,
 }
 
-impl Retry {
-    fn requested(&mut self, now: Instant) {
-        self.next = Some(now + Duration::from_secs(10));
-        self.game_seen = false;
-    }
-
-    fn due(&mut self, game_absent: bool, now: Instant) -> bool {
-        self.game_seen |= !game_absent;
-        !self.game_seen && self.next.is_some_and(|next| now >= next)
+impl Request {
+    fn observe_launcher(&mut self, present: bool) {
+        // Battle.net may queue --exec during startup. Time alone cannot prove
+        // that a request was lost: repeating it can create multiple clients.
+        // A launcher that was seen and has exited cannot retain that queue.
+        if self.pending && self.launcher_seen && !present {
+            *self = Self::default();
+        } else {
+            self.launcher_seen |= present;
+        }
     }
 }
 
-fn processes(expected: &Path) -> Result<Vec<u32>, String> {
+fn processes(expected: &Path) -> Result<Vec<Process>, String> {
     unsafe {
+        let mut own_session = 0;
+        if ProcessIdToSessionId(std::process::id(), &mut own_session) == 0 || own_session == 0 {
+            return Err("The game launcher requires an interactive Windows session.".into());
+        }
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot == INVALID_HANDLE_VALUE {
             return Err("Cannot inspect the game launcher.".into());
@@ -141,17 +192,14 @@ fn processes(expected: &Path) -> Result<Vec<u32>, String> {
             if String::from_utf16_lossy(&entry.szExeFile[..length])
                 .eq_ignore_ascii_case("Battle.net.exe")
             {
-                let process =
-                    OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
-                if !process.is_null() {
-                    let mut path = [0u16; 32768];
-                    let mut size = path.len() as u32;
-                    if QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut size) != 0
-                        && Path::new(&String::from_utf16_lossy(&path[..size as usize])) == expected
-                    {
-                        result.push(entry.th32ProcessID);
-                    }
-                    CloseHandle(process);
+                let mut session = 0;
+                if ProcessIdToSessionId(entry.th32ProcessID, &mut session) != 0
+                    && session == own_session
+                    && let Ok(process) = Process::open(entry.th32ProcessID, false)
+                    && same_path(&process.path, expected)
+                    && process.running()
+                {
+                    result.push(process);
                 }
             }
             more = Process32NextW(snapshot, &mut entry);
@@ -166,18 +214,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lost_cold_launch_is_retried_until_a_process_exists_even_without_an_endpoint() {
-        let now = Instant::now();
-        let mut retry = Retry::default();
-        assert!(!retry.due(true, now)); // Never launch on an attach-only path.
-        retry.requested(now);
-        assert!(!retry.due(true, now + Duration::from_secs(9)));
-        assert!(retry.due(true, now + Duration::from_secs(10)));
-        retry.requested(now + Duration::from_secs(10));
-        assert!(!retry.due(true, now + Duration::from_secs(11)));
-        assert!(!retry.due(false, now + Duration::from_secs(12)));
-        assert!(!retry.due(true, now + Duration::from_secs(30))); // Do not relaunch a crashed client.
-        retry.requested(now + Duration::from_secs(31)); // A new supervised launch.
-        assert!(retry.due(true, now + Duration::from_secs(41)));
+    fn a_slow_launcher_never_receives_duplicate_launch_commands() {
+        let mut launch = Launch::default();
+        assert!(!launch.pending());
+        launch.requested();
+        // Polls and connection timeout/retry cycles retain the same request.
+        for _ in 0..1800 {
+            launch.request.observe_launcher(true);
+            assert!(launch.pending());
+        }
+        launch.client_observed();
+        assert!(!launch.pending());
+        launch.requested();
+        assert!(launch.pending());
+    }
+
+    #[test]
+    fn only_a_confirmed_launcher_exit_releases_an_unanswered_request() {
+        let mut launch = Launch::default();
+        launch.requested();
+        launch.request.observe_launcher(false);
+        assert!(launch.pending());
+        launch.request.observe_launcher(true);
+        assert!(launch.pending());
+        launch.request.observe_launcher(false);
+        assert!(!launch.pending());
     }
 }

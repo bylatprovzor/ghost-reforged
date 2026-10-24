@@ -27,12 +27,7 @@ use windows_sys::Win32::{
     },
 };
 
-const EXE_HASH: &str = "bd2a0dc256289de45287bb60f3725b88f1235216d5177984377fe1ca22840a12";
-const SDK_HASH: &str = "3a8762f6641f39da8099009adccfe1b2f9aa9613defe98273e38341de500b10e";
-const TABLE: usize = 0x7777b8;
-const METHODS: [usize; 9] = [
-    0xaa630, 0xabdc0, 0xaaa10, 0xaadb0, 0xabc70, 0xab220, 0xabc40, 0xab040, 0xaaad0,
-];
+mod build;
 const SEND: usize = 7;
 const PAGE: usize = 4096;
 
@@ -78,15 +73,15 @@ impl NativeFilter {
         let modules = modules(pid)?;
         let exe = unique_module(&modules, "Warcraft III.exe")?;
         let sdk = unique_module(&modules, "ClientSdk.dll")?;
-        verify_hash(&exe.path, EXE_HASH)?;
-        verify_hash(&sdk.path, SDK_HASH)?;
-        if sdk.size < TABLE + METHODS.len() * 8 {
+        let build = build::for_hashes(&file_hash(&exe.path)?, &file_hash(&sdk.path)?)
+            .ok_or("This Warcraft III build has not been verified for blank host names.")?;
+        if sdk.size < build.table + build.methods.len() * 8 {
             return Err("Unsupported Warcraft III SDK layout.".into());
         }
         let filter = Self {
             process,
-            table: sdk.base + TABLE,
-            methods: METHODS.map(|rva| sdk.base + rva),
+            table: sdk.base + build.table,
+            methods: build.methods.map(|rva| sdk.base + rva),
             allocation: None,
             published: false,
             active: false,
@@ -344,7 +339,7 @@ fn unique_module<'a>(modules: &'a [Module], name: &str) -> Result<&'a Module, St
     Ok(first)
 }
 
-fn verify_hash(path: &std::path::Path, expected: &str) -> Result<(), String> {
+fn file_hash(path: &std::path::Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|_| "Cannot verify the Warcraft III build.")?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
@@ -357,10 +352,7 @@ fn verify_hash(path: &std::path::Path, expected: &str) -> Result<(), String> {
         }
         hash.update(&buffer[..count]);
     }
-    if format!("{:x}", hash.finalize()) != expected {
-        return Err("This Warcraft III build has not been verified for blank host names.".into());
-    }
-    Ok(())
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 #[cfg(test)]
