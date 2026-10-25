@@ -37,6 +37,10 @@ pub(super) struct Seed {
     sequence: u64,
     awaiting: Option<(u64, u64)>,
     written: bool,
+    // SetComputerSlot is sent on its own: on 3.0.1 it recreates the AI after
+    // later edits in the same batch and resets race and handicap.
+    slot_sent: bool,
+    retries: u8,
     notice: Option<String>,
     replies: std::collections::VecDeque<String>,
     reply_at: u64,
@@ -283,6 +287,8 @@ impl Seed {
             self.awaiting = None;
             self.replies.clear();
             self.written = false;
+            self.slot_sent = false;
+            self.retries = 0;
             self.expires_at = None;
         }
         if !matches!(self.stage, Stage::Ready | Stage::Unavailable)
@@ -311,6 +317,8 @@ impl Seed {
             self.began = now;
             self.stage = Stage::Write(0);
             self.written = false;
+            self.slot_sent = false;
+            self.retries = 0;
             self.replies.clear();
         }
         // Invalidate the marker before writing any fields, including on failure.
@@ -393,9 +401,29 @@ impl Seed {
                     self.fail("Ladder computer slot is missing.");
                     return Vec::new();
                 };
+                let legacy = matches!(packet.handicaps[0], 43..=46);
+                let fields = |slot: u8| {
+                    let mut commands = vec![
+                        Command::new("SetRace", json!({"slot":slot,"raceId":s.race})),
+                        Command::new("SetHandicap", json!({"slot":slot,"handicap":s.handicap})),
+                    ];
+                    if !legacy {
+                        commands.push(Command::new(
+                            "SetTeam",
+                            json!({"slot":slot,"team":s.team}),
+                        ));
+                    }
+                    commands
+                };
                 if self.written {
                     if p.handicap != Some(s.handicap) || p.race != Some(s.race) || p.team != s.team
                     {
+                        if self.retries < 3 {
+                            // A delayed AI recreation can reset the fields; write them again.
+                            self.retries += 1;
+                            let commands = fields(p.slot);
+                            return self.sent(now, commands);
+                        }
                         self.fail("Warcraft rejected a ladder packet field.");
                     } else if p.color != Some(s.color) {
                         // SetComputerSlot recreates the AI and resets its color.
@@ -404,26 +432,26 @@ impl Seed {
                     } else {
                         self.stage = Stage::Write(index + 1);
                         self.written = false;
+                        self.slot_sent = false;
+                        self.retries = 0;
                     }
                     return Vec::new();
+                }
+                if !self.slot_sent {
+                    self.slot_sent = true;
+                    let slot = p.slot;
+                    return self.sent(
+                        now,
+                        vec![Command::new(
+                            "SetComputerSlot",
+                            json!({"slot":slot,"difficulty":s.difficulty}),
+                        )],
+                    );
                 }
                 self.written = true;
                 // Team changes can reorder rows. Resolve the next color only
                 // after receiving a fresh snapshot of this completed edit.
-                let mut commands = vec![
-                    Command::new(
-                        "SetComputerSlot",
-                        json!({"slot":p.slot,"difficulty":s.difficulty}),
-                    ),
-                    Command::new("SetRace", json!({"slot":p.slot,"raceId":s.race})),
-                    Command::new("SetHandicap", json!({"slot":p.slot,"handicap":s.handicap})),
-                ];
-                if !matches!(packet.handicaps[0], 43..=46) {
-                    commands.push(Command::new(
-                        "SetTeam",
-                        json!({"slot":p.slot,"team":s.team}),
-                    ));
-                }
+                let commands = fields(p.slot);
                 self.sent(now, commands)
             }
             Stage::Commit => {
