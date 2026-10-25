@@ -18,6 +18,9 @@ pub enum ConfigError {
     InvisibleUnsupported,
 }
 
+/// Warcraft III builds whose lobby protocol has been checked with this host.
+pub const VERIFIED_VERSIONS: &[&str] = &["3.0.0.24268", "3.0.1.24371"];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -128,7 +131,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             headless: false,
-            expected_version: "3.0.0.24268".into(),
+            expected_version: "3.0.1.24371".into(),
             maps: Vec::new(),
             lobby_name: "GHost Rust #{n}".into(),
             first_number: 1,

@@ -142,11 +142,12 @@ pub(super) fn run(
         .max_redirects(0)
         .build()
         .new_agent();
+    let endpoint = crate::ladder::api_url("/v1/bot/games");
     let mut delay = 2u64;
     loop {
         let mut rejected = 0;
         match drain(&directory, |body| {
-            let result = deliver(&agent, "https://api.w3ladder.net/v1/bot/games", &key, body);
+            let result = deliver(&agent, &endpoint, &key, body);
             if result == Delivery::Rejected {
                 rejected += 1;
             }
@@ -155,7 +156,7 @@ pub(super) fn run(
             Ok((count, retry)) => {
                 if count > 0 {
                     let _ = tx.send(format!(
-                        "{count} started game(s) registered on w3ladder.net."
+                        "{count} started game(s) registered on the ladder server."
                     ));
                 }
                 if retry {

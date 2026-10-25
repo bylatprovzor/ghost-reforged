@@ -19,7 +19,7 @@ pub fn fetch_player(tag: &str) -> Result<Profile, Error> {
         .build()
         .new_agent();
     let mut response = agent
-        .get("https://api.w3ladder.net/v1/players")
+        .get(super::api_url("/v1/players").as_str())
         .query("battletag", tag)
         .call()
         .map_err(|_| Error::Unavailable)?;

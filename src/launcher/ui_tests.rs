@@ -104,7 +104,7 @@ fn update_modal_is_compact_blocks_underlying_controls_and_can_be_deferred() {
     let mut app = App::new(directory.path(), None);
     let release = serde_json::json!([{"tag_name":"v9.0.0","draft":false,"prerelease":true,"assets":[{
         "name":"GHost-Reforged-Setup-x64.exe","state":"uploaded","size":123,
-        "browser_download_url":"https://github.com/shideneyu/ghost-reforged/releases/download/v9.0.0/GHost-Reforged-Setup-x64.exe",
+        "browser_download_url":"https://github.com/bylatprovzor/ghost-reforged/releases/download/v9.0.0/GHost-Reforged-Setup-x64.exe",
         "digest":format!("sha256:{}", "a".repeat(64))
     }]}]);
     app.updates.available =

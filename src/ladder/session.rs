@@ -80,7 +80,7 @@ pub fn prepare_for_map(
         .build()
         .new_agent();
     let mut response = agent
-        .post("https://api.w3ladder.net/v1/ladder/sessions")
+        .post(super::api_url("/v1/ladder/sessions").as_str())
         .header("Authorization", &format!("Bearer {key}"))
         .header("Content-Type", "application/json")
         .send(payload.to_string())

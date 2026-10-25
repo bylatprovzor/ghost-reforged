@@ -20,7 +20,7 @@ pub(super) fn fetch_for(tags: &[String; 4], mmr: bool) -> Result<[Profile; 4], E
         .max_redirects(0)
         .build()
         .new_agent();
-    let mut request = agent.get("https://api.w3ladder.net/v1/profiles");
+    let mut request = agent.get(super::api_url("/v1/profiles").as_str());
     if mmr {
         request = request.query("rating", "mmr");
     }

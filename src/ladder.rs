@@ -14,6 +14,18 @@ pub use session::{Prepared, prepare, prepare_for_map};
 
 pub const MINIMUM_MMR_GAMES: u32 = 3;
 
+/// Rating server used for lobby sessions, player records and game reports.
+/// Override with the W3LADDER_API environment variable (for example a test server).
+pub const DEFAULT_API: &str = "https://survchaos.ru";
+
+pub fn api_url(path: &str) -> String {
+    let base = std::env::var("W3LADDER_API")
+        .ok()
+        .filter(|b| b.starts_with("https://") || b.starts_with("http://127.0.0.1"))
+        .unwrap_or_else(|| DEFAULT_API.into());
+    format!("{}{path}", base.trim_end_matches('/'))
+}
+
 pub const MAP_NAME: &str = "Survival Chaos Reforged 1.59a Ranked";
 pub const LEGACY_MAP_NAME: &str = "Survival Chaos Reforged Rank";
 

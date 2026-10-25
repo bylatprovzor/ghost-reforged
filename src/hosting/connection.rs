@@ -149,7 +149,10 @@ fn open_once(
         }
         Err(e) => return Err(e.to_string()),
     };
-    if endpoint.version.as_deref() != Some(config.expected_version.as_str()) {
+    let version = endpoint.version.as_deref();
+    if version != Some(config.expected_version.as_str())
+        && !version.is_some_and(|v| crate::config::VERIFIED_VERSIONS.contains(&v))
+    {
         return Err("This Warcraft III build has not been verified yet.".into());
     }
     if background

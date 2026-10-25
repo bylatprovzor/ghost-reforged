@@ -1,0 +1,33 @@
+name: Сборка для Windows
+
+on:
+  push:
+    branches: [survchaos]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Тесты
+        run: cargo test --locked --release
+      - name: Сборка
+        run: cargo build --locked --release --bin ghost-reforged --bin ghost-reforged-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-reforged-survchaos
+          path: |
+            target/release/ghost-reforged.exe
+            target/release/ghost-reforged-cli.exe
+            SURVCHAOS.md
