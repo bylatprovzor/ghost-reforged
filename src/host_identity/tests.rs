@@ -28,7 +28,7 @@ fn fixture() -> (Identity<Fake>, Rc<State>) {
     let state = Rc::new(State::default());
     (
         Identity {
-            filter: Fake(state.clone()),
+            filter: Some(Fake(state.clone())),
             creating: None,
         },
         state,
