@@ -21,7 +21,14 @@ jobs:
             target
           key: cargo-sc-${{ hashFiles('Cargo.lock') }}
       - name: Tests
-        run: cargo test --locked --release --all-features
+        shell: pwsh
+        run: |
+          cargo test --locked --release --all-features 2>&1 | Tee-Object -FilePath test.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content test.log | Select-String -Pattern 'error(\[E\d+\])?:|panicked|^---- |FAILED|failures:|left:|right:|-->|test result' | Select-Object -First 45 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            exit $code
+          }
       - name: Package
         shell: pwsh
         run: powershell -File packaging/windows/build.ps1
