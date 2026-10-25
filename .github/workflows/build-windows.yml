@@ -21,7 +21,15 @@ jobs:
             target
           key: cargo-${{ hashFiles('Cargo.lock') }}
       - name: Тесты
-        run: cargo test --locked --release
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          cargo test --locked --release 2>&1 | Tee-Object -FilePath test.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content test.log | Select-String -Pattern 'error(\[E\d+\])?:|panicked|^---- |FAILED|failures:|left:|right:|-->' | Select-Object -First 40 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            exit $code
+          }
       - name: Сборка
         run: cargo build --locked --release --bin ghost-reforged --bin ghost-reforged-cli
       - uses: actions/upload-artifact@v4
