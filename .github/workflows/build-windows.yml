@@ -26,7 +26,7 @@ jobs:
           cargo test --locked --release --all-features -- --skip background_window:: --skip background_render:: --skip background_audio:: 2>&1 | Tee-Object -FilePath test.log
           $code = $LASTEXITCODE
           if ($code -ne 0) {
-            Get-Content test.log | Select-String -Pattern 'error(\[E\d+\])?:|panicked|^---- |FAILED|failures:|left:|right:|-->|test result' | Select-Object -First 45 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            Get-Content test.log | Select-String -Pattern ' FAILED$|panicked at|^test result:|^error(\[E\d+\])?:|^    [a-z_:]+$' | Select-Object -First 45 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
             exit $code
           }
       - name: Package
