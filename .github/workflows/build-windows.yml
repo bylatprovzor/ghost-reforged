@@ -2,7 +2,7 @@ name: Windows build (survchaos.ru)
 
 on:
   push:
-    branches: [survchaos]
+    branches: [survchaos-sc]
   workflow_dispatch:
 
 jobs:
