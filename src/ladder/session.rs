@@ -72,7 +72,7 @@ pub fn prepare_for_map(
         .build()
         .new_agent();
     let mut response = agent
-        .post("https://api.w3ladder.net/v1/ladder/sessions")
+        .post("https://api.survchaos.ru/v1/ladder/sessions")
         .header("Authorization", &format!("Bearer {key}"))
         .header("Content-Type", "application/json")
         .send(payload.to_string())

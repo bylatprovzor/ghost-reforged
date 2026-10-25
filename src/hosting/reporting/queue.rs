@@ -146,7 +146,7 @@ pub(super) fn run(
     loop {
         let mut rejected = 0;
         match drain(&directory, |body| {
-            let result = deliver(&agent, "https://api.w3ladder.net/v1/bot/games", &key, body);
+            let result = deliver(&agent, "https://api.survchaos.ru/v1/bot/games", &key, body);
             if result == Delivery::Rejected {
                 rejected += 1;
             }
@@ -155,7 +155,7 @@ pub(super) fn run(
             Ok((count, retry)) => {
                 if count > 0 {
                     let _ = tx.send(format!(
-                        "{count} started game(s) registered on w3ladder.net."
+                        "{count} started game(s) registered on survchaos.ru."
                     ));
                 }
                 if retry {
