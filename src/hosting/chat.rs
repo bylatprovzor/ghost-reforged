@@ -56,7 +56,9 @@ impl Replies {
             return None;
         }
         let (_, text) = self.queued.pop_front()?;
-        self.next = now + 150;
+        // Warcraft drops a second message sent right after the first, so
+        // English and Russian lines go out a second apart.
+        self.next = now + 1000;
         Some(Command::new("SendGameChatMessage", json!({"content":text})))
     }
 }

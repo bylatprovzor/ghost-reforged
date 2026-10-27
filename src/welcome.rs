@@ -22,9 +22,9 @@ impl Default for Welcome {
         Self {
             enabled: true,
             message: [
-                "Welcome to our project w3ladder.net! / Добро пожаловать на наш проект w3ladder.net!",
-                "We have a ranked ladder and regular tournaments, join our community! / У нас рейтинговая система, постоянные турниры, присоединяйся к нам в сообщество!",
-                "More commands: ?help / Дополнительные команды можно узнать: ?help",
+                "Welcome to our project w3ladder.net! We have a ranked ladder and regular tournaments, join our community! More commands: ?help",
+                "Добро пожаловать на наш проект w3ladder.net! У нас рейтинговая система, постоянные турниры, присоединяйся к нам в сообщество!",
+                "Дополнительные команды можно узнать: ?help",
                 "#{playername}: {stats}",
             ]
             .join("\n"),

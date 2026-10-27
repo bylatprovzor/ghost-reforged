@@ -15,11 +15,11 @@ fn simultaneous_commands_are_queued_without_dropping_the_second_reply() {
     replies.push("first", 1000);
     replies.push("second", 1000);
     assert_eq!(replies.pop(1000).unwrap().payload["content"], "first");
-    assert!(replies.pop(1149).is_none());
-    assert_eq!(replies.pop(1150).unwrap().payload["content"], "second");
-    replies.push("old room", 1150);
+    assert!(replies.pop(1999).is_none());
+    assert_eq!(replies.pop(2000).unwrap().payload["content"], "second");
+    replies.push("old room", 2000);
     replies.lobby(Some("Next"));
-    assert!(replies.pop(2000).is_none());
+    assert!(replies.pop(3000).is_none());
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn chat_lines_are_utf8_bounded_and_backlogs_expire() {
     let mut replies = Replies::default();
     replies.push(&"é".repeat(700), 0);
     let mut restored = String::new();
-    for now in (0..1500).step_by(150) {
+    for now in (0..5000).step_by(1000) {
         if let Some(command) = replies.pop(now) {
             let text = command.payload["content"].as_str().unwrap();
             assert!(text.len() <= 240);
