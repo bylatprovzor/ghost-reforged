@@ -1,8 +1,11 @@
 param(
     [Parameter(Mandatory = $true)][string]$DataDirectory,
-    [string]$ExecutableDirectory = $PSScriptRoot
+    [string]$ExecutableDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
+if (-not $ExecutableDirectory) {
+    $ExecutableDirectory = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+}
 # Deliberately allowlist diagnostic fields. Never print profiles, command lines,
 # account names, endpoints, raw native frames, or Battle.net configuration.
 $data = [IO.Path]::GetFullPath($DataDirectory)

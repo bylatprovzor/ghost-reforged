@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$DataDirectory,
-    [string]$Executable = (Join-Path $PSScriptRoot 'ghost-reforged-supervisor.exe'),
+    [string]$Executable = '',
     [string]$User = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [switch]$Start,
     [switch]$Remove,
@@ -8,11 +8,14 @@ param(
     [string]$Name = ''
 )
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell can leave $PSScriptRoot empty in parameter defaults.
+$here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $Executable) { $Executable = Join-Path $here 'ghost-reforged-supervisor.exe' }
 if ($Name -and $Name -notmatch '^[A-Za-z0-9_-]{1,32}$') { throw 'Name must be 1-32 letters, digits, - or _.' }
 $suffix = if ($Name) { '-' + $Name } else { '' }
 $taskName = 'GHostReforged-Supervisor' + $suffix
 $recoveryName = 'GHostReforged-Recovery' + $suffix
-$recoveryScript = Join-Path $PSScriptRoot 'recover-supervisor.ps1'
+$recoveryScript = Join-Path $here 'recover-supervisor.ps1'
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $exe = [IO.Path]::GetFullPath($Executable)
 $data = [IO.Path]::GetFullPath($DataDirectory).TrimEnd('\')
@@ -60,7 +63,7 @@ $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) 
 $settings.Priority = 4
 $task = New-ScheduledTask -Action $action -Principal $principal -Trigger $trigger -Settings $settings `
     -Description 'GHost Reforged resident supervisor. Requires a logged-on Windows session; RDP may disconnect.'
-$recoveryAction = New-ScheduledTaskAction -Execute $powershell -Argument $recoveryArguments -WorkingDirectory $PSScriptRoot
+$recoveryAction = New-ScheduledTaskAction -Execute $powershell -Argument $recoveryArguments -WorkingDirectory $here
 $recoveryTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 # Checks never own controller children. Bound their lifetime and concurrency;
 # the primary task permits adoption even when an orphan retains its old job.
