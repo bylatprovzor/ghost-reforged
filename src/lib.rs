@@ -12,6 +12,7 @@ pub mod maps;
 pub mod profile;
 pub mod protocol;
 pub mod recovery;
+pub mod relay;
 pub mod stats;
 pub mod storage;
 pub mod supervisor;

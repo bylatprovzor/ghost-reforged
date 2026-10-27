@@ -26,6 +26,13 @@ pub(super) fn run(
     let mut retry = supervision::Retry::default();
     let mut engine = Engine::new(config);
     let mut reporter = reporting::Reporter::open(&engine.config)?;
+    let mut relay = crate::relay::Relay::from_env()?;
+    if let Some(relay) = &relay {
+        let _ = tx.send(Event::Activity(Activity::Command(format!(
+            "Relay host {}: one open lobby at a time with the other hosts of this server.",
+            relay.id()
+        ))));
+    }
     let started = Instant::now();
     let mut reserved = None;
     let Some(connection) = supervision::connect(
@@ -177,6 +184,9 @@ pub(super) fn run(
                         .is_ok_and(|lobby| ladder_seed.ready(&lobby));
                     engine.set_ladder_ready(ready);
                 }
+                if let Some(relay) = &mut relay {
+                    engine.set_relay_hold(relay.hold());
+                }
                 dispatch(
                     &mut engine,
                     event.as_ref(),
@@ -185,6 +195,11 @@ pub(super) fn run(
                     now,
                 )
             };
+            if let Some(relay) = &mut relay
+                && let Some(notice) = relay.publish(crate::relay::State::of(&engine))
+            {
+                let _ = tx.send(Event::Activity(Activity::Command(notice)));
+            }
             if let Some(notice) = engine.take_notice() {
                 let _ = tx.send(Event::Activity(Activity::Command(notice)));
             }

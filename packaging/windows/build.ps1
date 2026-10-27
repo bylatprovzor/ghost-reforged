@@ -40,7 +40,7 @@ try {
     foreach ($file in @('README.md', 'LICENSE', 'NOTICE')) {
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $package
     }
-    foreach ($file in @('Install.cmd', 'install.ps1', 'supervisor.ps1', 'recover-supervisor.ps1', 'diagnose.ps1', 'configure-host.ps1', 'VPS.md')) {
+    foreach ($file in @('Install.cmd', 'install.ps1', 'supervisor.ps1', 'recover-supervisor.ps1', 'diagnose.ps1', 'configure-host.ps1', 'relay-host.ps1', 'VPS.md')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $package
     }
     & (Join-Path $PSScriptRoot 'licenses.ps1') -OutputFile (Join-Path $package 'THIRD-PARTY-LICENSES.txt')

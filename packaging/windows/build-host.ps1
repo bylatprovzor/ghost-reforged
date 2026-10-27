@@ -20,7 +20,7 @@ try {
     foreach ($name in @('ghost-reforged-supervisor.exe', 'ghost-reforged-cli.exe')) {
         Copy-Item -LiteralPath (Join-Path $build ('release\' + $name)) -Destination $package
     }
-    foreach ($name in @('supervisor.ps1', 'recover-supervisor.ps1', 'diagnose.ps1', 'inspect-runtime.ps1', 'configure-host.ps1', 'configure-ladder.ps1', 'maintain-runtime.py', 'install-maintenance.ps1', 'VPS.md')) {
+    foreach ($name in @('supervisor.ps1', 'recover-supervisor.ps1', 'diagnose.ps1', 'inspect-runtime.ps1', 'configure-host.ps1', 'configure-ladder.ps1', 'relay-host.ps1', 'maintain-runtime.py', 'install-maintenance.ps1', 'VPS.md')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $package
     }
     foreach ($name in @('LICENSE', 'NOTICE')) {

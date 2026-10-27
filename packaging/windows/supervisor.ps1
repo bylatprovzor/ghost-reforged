@@ -3,11 +3,15 @@ param(
     [string]$Executable = (Join-Path $PSScriptRoot 'ghost-reforged-supervisor.exe'),
     [string]$User = [Security.Principal.WindowsIdentity]::GetCurrent().Name,
     [switch]$Start,
-    [switch]$Remove
+    [switch]$Remove,
+    # Several hosts on one server: one name per Windows user (for example bot-1).
+    [string]$Name = ''
 )
 $ErrorActionPreference = 'Stop'
-$taskName = 'GHostReforged-Supervisor'
-$recoveryName = 'GHostReforged-Recovery'
+if ($Name -and $Name -notmatch '^[A-Za-z0-9_-]{1,32}$') { throw 'Name must be 1-32 letters, digits, - or _.' }
+$suffix = if ($Name) { '-' + $Name } else { '' }
+$taskName = 'GHostReforged-Supervisor' + $suffix
+$recoveryName = 'GHostReforged-Recovery' + $suffix
 $recoveryScript = Join-Path $PSScriptRoot 'recover-supervisor.ps1'
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $exe = [IO.Path]::GetFullPath($Executable)
@@ -21,6 +25,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $data 'profiles.json') -PathType Lea
 $arguments = '--data-dir "' + $data + '"'
 $recoveryArguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $recoveryScript +
     '" -DataDirectory "' + $data + '" -Executable "' + $exe + '"'
+if ($Name) { $recoveryArguments += ' -TaskName "' + $taskName + '"' }
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 $recovery = Get-ScheduledTask -TaskName $recoveryName -ErrorAction SilentlyContinue
 if ($existing) {

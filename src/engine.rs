@@ -57,6 +57,8 @@ pub struct Engine {
     notice: Option<String>,
     ladder_ready: bool,
     session_replaced: bool,
+    relay_hold: bool,
+    relay_waiting: bool,
 }
 
 impl Engine {
@@ -88,7 +90,20 @@ impl Engine {
             notice: None,
             ladder_ready: false,
             session_replaced: false,
+            relay_hold: false,
+            relay_waiting: false,
         }
+    }
+
+    /// Another host of the relay owns the open lobby or is ahead in the queue:
+    /// stay signed in at the menu instead of creating a lobby.
+    pub fn set_relay_hold(&mut self, hold: bool) {
+        self.relay_hold = hold;
+    }
+
+    /// Ready to create a lobby and waiting only for the relay turn.
+    pub fn relay_ready(&self) -> bool {
+        self.relay_waiting && self.phase == Phase::AwaitMenu
     }
 
     pub fn stop(&mut self, reason: &str) {
@@ -440,6 +455,15 @@ impl Engine {
     }
 
     fn create(&mut self, now: u64) -> Vec<Command> {
+        if self.relay_hold {
+            if !self.relay_waiting {
+                self.notice = Some("Waiting for the relay: another host has the open lobby.".into());
+            }
+            self.relay_waiting = true;
+            self.phase = Phase::AwaitMenu;
+            return Vec::new();
+        }
+        self.relay_waiting = false;
         if self.config.name(self.number).len() > 31 {
             self.stop("Game name exceeds 31 UTF-8 bytes at this lobby number");
             return Vec::new();
@@ -517,6 +541,15 @@ impl Engine {
     }
 
     pub fn tick(&mut self, now: u64) -> Vec<Command> {
+        if self.relay_waiting
+            && !self.relay_hold
+            && self.phase == Phase::AwaitMenu
+            && self.provider_ready
+            && !self.menu_required
+            && !self.initialization_required
+        {
+            return self.create(now);
+        }
         if let Phase::Initializing(sent) = self.phase
             && now.saturating_sub(sent) >= self.config.startup_timeout_seconds
         {
