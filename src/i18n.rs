@@ -27,7 +27,7 @@ mod tests {
     fn short_pairs_share_a_line_and_long_pairs_split() {
         assert_eq!(both("Hi.", "Привет."), "Hi. / Привет.");
         assert_eq!(both("Same", "Same"), "Same");
-        let long = "x".repeat(200);
+        let long = "x".repeat(240);
         assert_eq!(both(&long, "Привет."), format!("{long}\nПривет."));
     }
 }

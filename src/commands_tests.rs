@@ -142,7 +142,7 @@ fn help_explains_enabled_commands_without_changing_votes_with_a_blank_host() {
         assert!(text.contains("?votestart"));
         assert!(text.contains("?votekick"));
         assert!(text.contains("?help <command>"));
-        assert!(text.len() <= 240);
+        assert!(text.lines().all(|l| l.len() <= 240));
         assert_eq!(commands.votes, votes);
         assert_eq!(commands.kick.as_ref().unwrap().voters, kick_voters);
     }

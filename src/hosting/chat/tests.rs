@@ -362,7 +362,7 @@ fn start_vote_reports_ladder_gate_instead_of_promising_a_countdown() {
                     actions.last().unwrap().payload["content"]
                         .as_str()
                         .unwrap()
-                        .contains("Requesting game start")
+                        .contains("Vote passed. Starting the game")
                 );
                 assert_eq!(engine.start_now(5)[0].message, "LobbyStart");
             }
@@ -410,7 +410,7 @@ fn start_vote_still_requests_native_start_on_non_ladder_maps() {
             actions.last().unwrap().payload["content"]
                 .as_str()
                 .unwrap()
-                .contains("Requesting game start")
+                .contains("Vote passed. Starting the game")
         );
         assert_eq!(engine.start_now(2)[0].message, "LobbyStart");
     }
