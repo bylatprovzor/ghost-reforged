@@ -196,7 +196,9 @@ mod tests {
         let peers = [peer("a", State::Ready, 20, 100), peer("c", State::Ready, 10, 100)];
         assert!(hold(&peer("b", State::Ready, 15, 100), &peers, 100));
         assert!(!hold(&peer("c", State::Ready, 10, 100), &peers, 100));
-        assert!(hold(&peer("b", State::Ready, 10, 100), &peers, 100));
+        // Same wait as c: the smaller id goes first.
+        assert!(!hold(&peer("b", State::Ready, 10, 100), &peers, 100));
+        assert!(hold(&peer("d", State::Ready, 10, 100), &peers, 100));
         assert!(!hold(&peer("a", State::Ready, 10, 100), &[peer("b", State::Ready, 10, 100)], 100));
     }
 
