@@ -20,7 +20,7 @@ pub(super) fn help(settings: &CommandSettings, argument: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    format!("Commands: {list}. Type ? or ! first. Use ?help <command> for details.")
+    format!("Commands: {list}. Start each command with ?. Use ?help <command> for details.")
 }
 
 pub(super) fn regions(lobby: &Lobby, argument: &str) -> String {
