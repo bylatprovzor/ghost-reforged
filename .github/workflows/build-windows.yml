@@ -1,0 +1,38 @@
+name: Windows build (multi-lobby)
+
+on:
+  push:
+    branches: [multi-lobby]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-sc-${{ hashFiles('Cargo.lock') }}
+      - name: Tests
+        shell: pwsh
+        run: |
+          cargo test --locked --release --all-features -- --skip background_window:: --skip background_render:: --skip background_audio:: 2>&1 | Tee-Object -FilePath test.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content test.log | Select-String -Pattern ' FAILED$|panicked at|^test result:|^error(\[E\d+\])?:|^    [a-z_:]+$' | Select-Object -First 45 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            exit $code
+          }
+      - name: Package
+        shell: pwsh
+        run: powershell -File packaging/windows/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghost-reforged-multi-lobby
+          path: target/package/*.zip

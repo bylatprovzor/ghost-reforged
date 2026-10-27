@@ -102,6 +102,7 @@ pub fn observe() -> Observation {
                 .unwrap_or(entry.szExeFile.len());
             if String::from_utf16_lossy(&entry.szExeFile[..end])
                 .eq_ignore_ascii_case("Warcraft III.exe")
+                && ghost_reforged::discovery::same_session(entry.th32ProcessID)
             {
                 ids.push(entry.th32ProcessID);
             }

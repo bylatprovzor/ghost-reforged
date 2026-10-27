@@ -53,6 +53,7 @@ mod native {
         Networking::WinSock::AF_INET,
         System::{
             Diagnostics::{Debug::ReadProcessMemory, ToolHelp::*},
+            RemoteDesktop::ProcessIdToSessionId,
             Memory::{
                 MEM_COMMIT, MEM_PRIVATE, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS,
                 VirtualQueryEx,
@@ -69,6 +70,17 @@ mod native {
             unsafe {
                 CloseHandle(self.0);
             }
+        }
+    }
+
+    /// Several hosts may run on one server, one Windows user and session each.
+    /// Each controller only sees the clients of its own session.
+    pub fn same_session(pid: u32) -> bool {
+        let (mut own, mut other) = (0u32, 0u32);
+        unsafe {
+            ProcessIdToSessionId(std::process::id(), &mut own) != 0
+                && ProcessIdToSessionId(pid, &mut other) != 0
+                && own == other
         }
     }
 
@@ -91,6 +103,7 @@ mod native {
                     .unwrap_or(entry.szExeFile.len());
                 if String::from_utf16_lossy(&entry.szExeFile[..end])
                     .eq_ignore_ascii_case("Warcraft III.exe")
+                    && same_session(entry.th32ProcessID)
                 {
                     ids.push(entry.th32ProcessID);
                 }
@@ -264,7 +277,11 @@ fn build_version(contents: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-pub use native::discover;
+pub use native::{discover, same_session};
+#[cfg(not(windows))]
+pub fn same_session(_: u32) -> bool {
+    true
+}
 #[cfg(windows)]
 pub(crate) use native::{has_listener, process_id};
 #[cfg(not(windows))]
