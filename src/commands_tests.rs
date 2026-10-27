@@ -67,7 +67,7 @@ fn disabled_commands_external_channels_and_spoofed_text_are_ignored() {
     );
     assert!(
         commands
-            .handle(&chat("Player1", "!help"), &settings, 4)
+            .handle(&chat("Player1", "#help"), &settings, 4)
             .reply
             .is_none()
     );
