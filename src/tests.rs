@@ -570,5 +570,6 @@ fn a_full_lobby_is_told_when_the_start_countdown_begins_or_stops() {
     assert_eq!(engine.phase, Phase::Lobby);
     assert!(left[0].payload["content"].as_str().unwrap().contains("cancelled"));
     assert!(engine.on_event(&full(), 4)[0].payload["content"].as_str().unwrap().contains("15"));
+    engine.on_event(&full(), 18);
     assert_eq!(engine.tick(19)[0].message, "LobbyStart");
 }
