@@ -5,13 +5,19 @@ pub(super) fn help(settings: &CommandSettings, argument: &str) -> String {
     if !argument.is_empty() {
         return ChatCommand::parse(argument)
             .filter(|c| settings.enabled(*c))
-            .map(|c| format!("{}: {}", c.name(), c.description()))
+            .map(|c| match c.short() {
+                Some(short) => format!("{} (!{short}): {}", c.name(), c.description()),
+                None => format!("{}: {}", c.name(), c.description()),
+            })
             .unwrap_or_else(|| "Unknown or disabled command. Use ?help.".into());
     }
     let list = ChatCommand::ALL
         .into_iter()
         .filter(|c| settings.enabled(*c))
-        .map(ChatCommand::name)
+        .map(|c| match c.short() {
+            Some(short) => format!("{}({short})", c.name()),
+            None => c.name().to_owned(),
+        })
         .collect::<Vec<_>>()
         .join(" ");
     format!("Commands: {list}. Type ? or ! first. Use ?help <command> for details.")

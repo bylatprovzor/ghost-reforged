@@ -85,11 +85,23 @@ impl ChatCommand {
         }
     }
 
+    /// Short forms players can type instead of the full name.
+    pub fn short(self) -> Option<&'static str> {
+        match self {
+            Self::VoteStart => Some("vs"),
+            Self::VoteCancel => Some("vc"),
+            Self::VoteKick => Some("vk"),
+            _ => None,
+        }
+    }
+
+    /// The command for a typed word: `?name`, `!name` or a short form (`!vs`).
     pub fn parse(word: &str) -> Option<Self> {
-        let word = word.trim().trim_start_matches(['?', '!']);
-        Self::ALL
-            .into_iter()
-            .find(|c| c.name()[1..].eq_ignore_ascii_case(word))
+        let word = word.trim();
+        let word = word.strip_prefix(['?', '!']).unwrap_or(word);
+        Self::ALL.into_iter().find(|c| {
+            c.name()[1..].eq_ignore_ascii_case(word) || c.short().is_some_and(|s| s.eq_ignore_ascii_case(word))
+        })
     }
 }
 

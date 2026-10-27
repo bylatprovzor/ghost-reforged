@@ -316,3 +316,21 @@ fn every_command_also_answers_to_an_exclamation_mark() {
     assert_eq!(ChatCommand::parse("!votekick"), Some(ChatCommand::VoteKick));
     assert_eq!(ChatCommand::parse("?votekick"), Some(ChatCommand::VoteKick));
 }
+
+#[test]
+fn short_forms_start_cancel_and_kick_votes() {
+    for (word, command) in [("!vs", ChatCommand::VoteStart), ("?VS", ChatCommand::VoteStart),
+        ("!vc", ChatCommand::VoteCancel), ("!vk", ChatCommand::VoteKick), ("vk", ChatCommand::VoteKick)] {
+        assert_eq!(ChatCommand::parse(word), Some(command), "{word}");
+    }
+    assert_eq!(ChatCommand::parse("!vx"), None);
+    let mut commands = LobbyCommands::default();
+    commands.observe(Some(&lobby()), 0);
+    let settings = CommandSettings::default();
+    assert!(!commands.handle(&chat("Player1", "!vs"), &settings, 1).start);
+    assert!(commands.handle(&chat("Player2", "?vs"), &settings, 2).start);
+    assert!(commands.handle(&chat("Player1", "vs"), &settings, 3).reply.is_none(), "needs ? or !");
+    let help = commands.handle(&chat("Player1", "!help"), &settings, 4).reply.unwrap();
+    let text = help.payload["content"].as_str().unwrap();
+    assert!(text.contains("?votestart(vs)") && text.contains("?votekick(vk)") && text.len() <= 240, "{text}");
+}
