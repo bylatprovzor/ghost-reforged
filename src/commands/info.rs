@@ -14,7 +14,7 @@ pub(super) fn help(settings: &CommandSettings, argument: &str) -> String {
         .map(ChatCommand::name)
         .collect::<Vec<_>>()
         .join(" ");
-    format!("Commands: {list}. Use ?help <command> for details.")
+    format!("Commands: {list}. Type ? or ! first. Use ?help <command> for details.")
 }
 
 pub(super) fn regions(lobby: &Lobby, argument: &str) -> String {

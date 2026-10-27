@@ -86,7 +86,7 @@ impl ChatCommand {
     }
 
     pub fn parse(word: &str) -> Option<Self> {
-        let word = word.trim().trim_start_matches('?');
+        let word = word.trim().trim_start_matches(['?', '!']);
         Self::ALL
             .into_iter()
             .find(|c| c.name()[1..].eq_ignore_ascii_case(word))

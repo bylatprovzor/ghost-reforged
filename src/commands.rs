@@ -161,6 +161,11 @@ impl LobbyCommands {
             .trim()
             .split_once(char::is_whitespace)
             .unwrap_or((content.trim(), ""));
+        // Commands answer to both ?name and !name.
+        let keyword = match keyword.strip_prefix('!') {
+            Some(rest) => format!("?{rest}"),
+            None => keyword.to_owned(),
+        };
         let Some(command) = ChatCommand::ALL
             .into_iter()
             .find(|c| keyword.eq_ignore_ascii_case(c.name()))

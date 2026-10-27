@@ -35,6 +35,8 @@ pub struct Config {
     pub require_full: bool,
     pub count_host: bool,
     pub countdown_seconds: u64,
+    /// Tell the lobby when the start countdown begins or is cancelled.
+    pub announce_countdown: bool,
     pub auto_start: bool,
     pub commands: crate::commands::CommandSettings,
     pub stats_path: Option<PathBuf>,
@@ -144,6 +146,7 @@ impl Default for Config {
             require_full: false,
             count_host: false,
             countdown_seconds: 10,
+            announce_countdown: false,
             auto_start: true,
             commands: crate::commands::CommandSettings::default(),
             stats_path: None,

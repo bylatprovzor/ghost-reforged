@@ -547,3 +547,28 @@ fn invisible_requirement_does_not_silently_fall_back() {
 fn misspelled_settings_are_rejected() {
     assert!(toml::from_str::<Config>("min_player = 5").is_err());
 }
+
+#[test]
+fn a_full_lobby_is_told_when_the_start_countdown_begins_or_stops() {
+    let mut engine = armed();
+    engine.config.countdown_seconds = 15;
+    engine.config.announce_countdown = true;
+    let full = || {
+        lobby(vec![
+            player(0, true, false, false),
+            player(1, false, false, false),
+            player(2, false, false, false),
+        ])
+    };
+    let said = engine.on_event(&full(), 1);
+    assert_eq!(engine.phase, Phase::Countdown(16));
+    assert_eq!(said.len(), 1);
+    assert_eq!(said[0].message, "SendGameChatMessage");
+    assert!(said[0].payload["content"].as_str().unwrap().contains("15"));
+    assert!(engine.on_event(&full(), 2).is_empty(), "announced once");
+    let left = engine.on_event(&lobby(vec![player(0, true, false, false), player(1, false, false, false)]), 3);
+    assert_eq!(engine.phase, Phase::Lobby);
+    assert!(left[0].payload["content"].as_str().unwrap().contains("cancelled"));
+    assert!(engine.on_event(&full(), 4)[0].payload["content"].as_str().unwrap().contains("15"));
+    assert_eq!(engine.tick(19)[0].message, "LobbyStart");
+}

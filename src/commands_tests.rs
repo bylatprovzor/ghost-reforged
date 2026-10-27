@@ -300,3 +300,19 @@ fn live_disabling_clears_votes_and_old_ready_settings_migrate() {
             .is_none()
     );
 }
+
+#[test]
+fn every_command_also_answers_to_an_exclamation_mark() {
+    let mut commands = LobbyCommands::default();
+    commands.observe(Some(&lobby()), 0);
+    let settings = CommandSettings::default();
+    assert!(!commands.handle(&chat("Player1", "!votestart"), &settings, 1).start);
+    assert!(commands.handle(&chat("Player2", "!VOTESTART"), &settings, 2).start);
+    let help = commands.handle(&chat("Player2", "!help"), &settings, 3).reply.unwrap();
+    assert!(help.payload["content"].as_str().unwrap().contains("? or !"));
+    for text in ["!", "!!help", "! help", "!unknown"] {
+        assert!(commands.handle(&chat("Player2", text), &settings, 4).reply.is_none(), "{text}");
+    }
+    assert_eq!(ChatCommand::parse("!votekick"), Some(ChatCommand::VoteKick));
+    assert_eq!(ChatCommand::parse("?votekick"), Some(ChatCommand::VoteKick));
+}

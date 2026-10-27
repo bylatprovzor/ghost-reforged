@@ -665,7 +665,14 @@ impl Engine {
                 return vec![Command::empty("LobbyCancel")];
             }
             self.cancelled_roster = None;
+            let counting = matches!(self.phase, Phase::Countdown(_));
             self.phase = Phase::Lobby;
+            if counting && self.config.announce_countdown {
+                return vec![Command::new(
+                    "SendGameChatMessage",
+                    json!({"content": "Start cancelled: waiting for players. / Старт отменён: ждём игроков."}),
+                )];
+            }
             if let Some(empty_since) = self.empty_since
                 && self.config.empty_rehost_seconds > 0
                 && now.saturating_sub(empty_since) >= self.config.empty_rehost_seconds
@@ -678,7 +685,16 @@ impl Engine {
             && self.cancelled_roster.as_ref() != Some(&lobby.start_signature())
         {
             match self.phase {
-                Phase::Lobby => self.phase = Phase::Countdown(now + self.config.countdown_seconds),
+                Phase::Lobby => {
+                    self.phase = Phase::Countdown(now + self.config.countdown_seconds);
+                    if self.config.announce_countdown && self.config.countdown_seconds > 0 {
+                        let s = self.config.countdown_seconds;
+                        return vec![Command::new(
+                            "SendGameChatMessage",
+                            json!({"content": format!("Everyone is here: the game starts in {s} s. / Все в сборе: игра начнётся через {s} с.")}),
+                        )];
+                    }
+                }
                 Phase::Countdown(until) if now >= until => {
                     self.begin_start(now, false);
                     // The game itself performs its authoritative map/readiness validation.
