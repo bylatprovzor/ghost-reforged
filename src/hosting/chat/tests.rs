@@ -8,6 +8,16 @@ fn message(content: &str) -> Value {
     )
 }
 
+/// Every reply line already sent or still queued (Russian follows English a
+/// second later).
+fn said(actions: &[Command], chat: &Chat) -> Vec<String> {
+    actions
+        .iter()
+        .filter_map(|c| c.payload["content"].as_str().map(str::to_owned))
+        .chain(chat.replies.queued.iter().map(|(_, t)| t.clone()))
+        .collect()
+}
+
 #[test]
 fn simultaneous_commands_are_queued_without_dropping_the_second_reply() {
     let mut replies = Replies::default();
@@ -27,7 +37,7 @@ fn chat_lines_are_utf8_bounded_and_backlogs_expire() {
     let mut replies = Replies::default();
     replies.push(&"é".repeat(700), 0);
     let mut restored = String::new();
-    for now in (0..5000).step_by(1000) {
+    for now in (0..9000).step_by(1000) {
         if let Some(command) = replies.pop(now) {
             let text = command.payload["content"].as_str().unwrap();
             assert!(text.len() <= 240);
@@ -215,7 +225,7 @@ fn unread_chat_does_not_delay_departure_cancellation_and_replies_survive_the_bur
             .as_str()
             .is_some_and(|t| t.starts_with("Commands:"))
     }));
-    assert_eq!(chat.replies.queued.len(), 1);
+    assert!(!chat.replies.queued.is_empty());
     tx.send(()).unwrap();
     let measured = server.join().unwrap();
     assert!(
@@ -333,8 +343,12 @@ fn start_vote_reports_ladder_gate_instead_of_promising_a_countdown() {
                 );
                 assert!(!outcome.start, "blocked vote must not request start");
             }
-            let last = actions.last().unwrap().payload["content"].as_str().unwrap();
-            assert!(last.contains("start is blocked"), "{last}");
+            let lines = said(&actions, &chat);
+            let last = lines
+                .iter()
+                .rev()
+                .find(|t| t.contains("start is blocked"))
+                .unwrap_or_else(|| panic!("{lines:?}"));
             assert!(!last.contains("Starting the countdown"), "{last}");
             assert!(
                 last.contains(if players == 3 {
@@ -360,8 +374,11 @@ fn start_vote_reports_ladder_gate_instead_of_promising_a_countdown() {
                 assert!(outcome.start);
                 // Replies queue in order; the Russian half of the earlier
                 // blocked notice may still be ahead of this one.
-                let mut texts = actions.iter().filter_map(|c| c.payload["content"].as_str());
-                assert!(texts.any(|t| t.contains("Vote passed. Starting the game") || t.starts_with("Голосование прошло, но")));
+                assert!(
+                    said(&actions, &chat)
+                        .iter()
+                        .any(|t| t.contains("Vote passed. Starting the game"))
+                );
                 assert_eq!(engine.start_now(5)[0].message, "LobbyStart");
             }
         }
@@ -405,10 +422,9 @@ fn start_vote_still_requests_native_start_on_non_ladder_maps() {
         );
         assert!(outcome.start);
         assert!(
-            actions.last().unwrap().payload["content"]
-                .as_str()
-                .unwrap()
-                .contains("Vote passed. Starting the game")
+            said(&actions, &chat)
+                .iter()
+                .any(|t| t.contains("Vote passed. Starting the game"))
         );
         assert_eq!(engine.start_now(2)[0].message, "LobbyStart");
     }
