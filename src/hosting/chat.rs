@@ -172,7 +172,7 @@ impl Chat {
         });
         if let Some(request) = outcome.color.take() {
             if engine.phase != Phase::Lobby || self.color.is_some() {
-                self.replies.push("Color change unavailable during another edit or countdown. Try again in the lobby.", milliseconds);
+                self.replies.push("Color change unavailable during another edit or countdown. Try again in the lobby.\nСейчас цвет сменить нельзя: идёт другое изменение или отсчёт. Попробуйте позже.", milliseconds);
             } else {
                 self.color = Some(PendingColor {
                     request,

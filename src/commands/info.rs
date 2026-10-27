@@ -5,11 +5,14 @@ pub(super) fn help(settings: &CommandSettings, argument: &str) -> String {
     if !argument.is_empty() {
         return ChatCommand::parse(argument)
             .filter(|c| settings.enabled(*c))
-            .map(|c| match c.short() {
-                Some(short) => format!("{} (!{short}): {}", c.name(), c.description()),
-                None => format!("{}: {}", c.name(), c.description()),
+            .map(|c| {
+                let name = match c.short() {
+                    Some(short) => format!("?{} (?{short})", c.name()),
+                    None => format!("?{}", c.name()),
+                };
+                crate::i18n::both(format!("{name}: {}", c.description()), format!("{name}: {}", c.description_ru()))
             })
-            .unwrap_or_else(|| "Unknown or disabled command. Use ?help.".into());
+            .unwrap_or_else(|| crate::i18n::both("Unknown or disabled command. Use ?help.", "Нет такой команды. Пишите ?help."));
     }
     let list = ChatCommand::ALL
         .into_iter()
@@ -20,7 +23,10 @@ pub(super) fn help(settings: &CommandSettings, argument: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    format!("Commands: {list}. Start each command with ?. Use ?help <command> for details.")
+    crate::i18n::both(
+        format!("Commands: {list}. Start each command with ?. ?help <command> for details."),
+        "Команды пишутся через ? в начале. ?help <команда> — подробнее.",
+    )
 }
 
 pub(super) fn regions(lobby: &Lobby, argument: &str) -> String {
@@ -38,10 +44,10 @@ pub(super) fn regions(lobby: &Lobby, argument: &str) -> String {
         })
         .collect();
     if players.is_empty() {
-        return "Player not found. Use ?from [full BattleTag].".into();
+        return crate::i18n::both("Player not found. Use ?from [full BattleTag].", "Игрок не найден. Пишите ?from [полный BattleTag].");
     }
     if !argument.is_empty() && players.len() > 1 {
-        return "That name is ambiguous. Use the full BattleTag.".into();
+        return crate::i18n::both("That name is ambiguous. Use the full BattleTag.", "Таких имён несколько. Напишите полный BattleTag.");
     }
     let rows = players
         .iter()
@@ -62,7 +68,7 @@ pub(super) fn regions(lobby: &Lobby, argument: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("; ");
-    format!("Battle.net regions: {rows}.")
+    crate::i18n::both(format!("Battle.net regions: {rows}."), format!("Регионы Battle.net: {rows}."))
 }
 
 pub(super) fn map(lobby: &Lobby) -> String {
@@ -81,7 +87,7 @@ pub(super) fn map(lobby: &Lobby) -> String {
 
 pub(super) fn stats(history: Option<&History>, sender: &str, argument: &str) -> String {
     let Some(history) = history else {
-        return "Statistics are unavailable in this session.".into();
+        return crate::i18n::both("Statistics are unavailable in this session.", "Статистика сейчас недоступна.");
     };
     if argument.is_empty() {
         return history.describe(sender);
@@ -113,9 +119,9 @@ pub(super) fn ladder_target(
         });
     let player = matches
         .next()
-        .ok_or("Player not found. Use ?stats [full BattleTag].")?;
+        .ok_or("Player not found. Use ?stats [full BattleTag]. / Игрок не найден. Пишите ?stats [полный BattleTag].")?;
     if matches.next().is_some() {
-        return Err("That name is ambiguous. Use the full BattleTag.");
+        return Err("That name is ambiguous. Use the full BattleTag. / Таких имён несколько. Напишите полный BattleTag.");
     }
     Ok(player.name.clone())
 }

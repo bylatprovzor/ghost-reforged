@@ -309,7 +309,7 @@ fn every_command_also_answers_to_an_exclamation_mark() {
     assert!(!commands.handle(&chat("Player1", "!votestart"), &settings, 1).start);
     assert!(commands.handle(&chat("Player2", "!VOTESTART"), &settings, 2).start);
     let help = commands.handle(&chat("Player2", "!help"), &settings, 3).reply.unwrap();
-    assert!(help.payload["content"].as_str().unwrap().contains("? or !"));
+    assert!(help.payload["content"].as_str().unwrap().contains("Start each command with ?"));
     for text in ["!", "!!help", "! help", "!unknown"] {
         assert!(commands.handle(&chat("Player2", text), &settings, 4).reply.is_none(), "{text}");
     }
@@ -332,5 +332,6 @@ fn short_forms_start_cancel_and_kick_votes() {
     assert!(commands.handle(&chat("Player1", "vs"), &settings, 3).reply.is_none(), "needs ? or !");
     let help = commands.handle(&chat("Player1", "!help"), &settings, 4).reply.unwrap();
     let text = help.payload["content"].as_str().unwrap();
-    assert!(text.contains("?votestart(vs)") && text.contains("?votekick(vk)") && text.len() <= 240, "{text}");
+    assert!(text.contains("?votestart(vs)") && text.contains("?votekick(vk)") && text.lines().all(|l| l.len() <= 240), "{text}");
+    assert!(text.contains("Команды"), "{text}");
 }

@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod discovery;
 pub mod engine;
 pub mod hosting;
+pub mod i18n;
 pub mod journal;
 pub mod ladder;
 pub mod map_name;

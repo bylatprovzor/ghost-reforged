@@ -8,13 +8,17 @@ use std::{collections::VecDeque, time::Instant};
 pub struct Welcome {
     pub enabled: bool,
     pub message: String,
+    /// Optional second message sent right after the first, for example the
+    /// same greeting in another language. Empty sends only `message`.
+    pub second: String,
 }
 
 impl Default for Welcome {
     fn default() -> Self {
         Self {
             enabled: true,
-            message: "Welcome to this automatic lobby #{playername}, please type ?help to see the different options".into(),
+            message: "Welcome to w3ladder.net, #{playername}! Ranked ladder and regular tournaments: join our community! Commands: ?help".into(),
+            second: "Добро пожаловать на w3ladder.net! Рейтинг и постоянные турниры: присоединяйся к сообществу! Команды: ?help".into(),
         }
     }
 }
@@ -27,17 +31,23 @@ impl Welcome {
         {
             return Err("Welcome message must contain 1 to 200 bytes on one line.".into());
         }
+        if self.second.chars().any(char::is_control) || self.second.len() > 200 {
+            return Err("The second welcome message must fit 200 bytes on one line.".into());
+        }
         Ok(())
     }
 
     fn render(&self, player: &str, stats: &str) -> String {
+        Self::fill(&self.message, player, stats)
+    }
+
+    fn fill(template: &str, player: &str, stats: &str) -> String {
         let name: String = player
             .chars()
             .filter(|c| !c.is_control())
             .take(32)
             .collect();
-        let text = self
-            .message
+        let text = template
             .replace("{stats}", stats)
             .replace("#{playername}", &name);
         let end = (0..=text.len().min(250))
@@ -57,6 +67,8 @@ impl Welcome {
 #[derive(Default)]
 pub struct Announcements {
     queue: VecDeque<(String, Instant)>,
+    /// The second welcome line, sent on the next turn after the first.
+    follow: Option<(String, String)>,
     last_sent: Option<u64>,
     last_detected: Option<Instant>,
 }
@@ -70,6 +82,13 @@ impl Announcements {
 
     pub fn left(&mut self, player: &str) {
         self.queue.retain(|(name, _)| name != player);
+        if self
+            .follow
+            .as_ref()
+            .is_some_and(|(name, _)| name.as_str() == player)
+        {
+            self.follow = None;
+        }
     }
 
     /// Call only after the native socket accepted the send. This measures local
@@ -92,10 +111,15 @@ impl Announcements {
     ) -> Option<Command> {
         if !settings.enabled {
             self.queue.clear();
+            self.follow = None;
             return None;
         }
         if self.last_sent.is_some_and(|last| now <= last) {
             return None;
+        }
+        if let Some((_, text)) = self.follow.take() {
+            self.last_sent = Some(now);
+            return Some(Command::new("SendGameChatMessage", json!({"content":text})));
         }
         while let Some((name, detected)) = self.queue.pop_front() {
             if lobby
@@ -116,6 +140,10 @@ impl Announcements {
                 };
                 self.last_sent = Some(now);
                 self.last_detected = Some(detected);
+                if !settings.second.trim().is_empty() {
+                    self.follow =
+                        Some((name.clone(), Welcome::fill(&settings.second, &name, &stats)));
+                }
                 return Some(Command::new(
                     "SendGameChatMessage",
                     json!({"content":settings.render(&name, &stats)}),
@@ -146,6 +174,7 @@ mod tests {
         let mut settings = Welcome {
             enabled: true,
             message: "Hi #{playername}".into(),
+            second: String::new(),
         };
         assert_eq!(
             queue
@@ -179,12 +208,48 @@ mod tests {
     #[test]
     fn template_replaces_names_without_sending_commands_or_unbounded_text() {
         let mut welcome = Welcome::default();
-        assert!(welcome.render("Player", "").contains("lobby Player,"));
+        assert!(
+            welcome
+                .render("Player", "")
+                .contains("w3ladder.net, Player!")
+        );
         welcome.message = "/whisper #{playername}".into();
         assert!(welcome.render("Player", "").starts_with(" /whisper"));
         welcome.message = "#{playername}".repeat(10);
         assert!(welcome.render(&"é".repeat(32), "").len() <= 250);
         welcome.message = "Hello\nWorld".into();
         assert!(welcome.validate().is_err());
+    }
+    #[test]
+    fn the_second_line_follows_on_the_next_turn() {
+        let roster: Lobby = serde_json::from_value(json!({"isHost":true,"lobbyName":"Test #1","mapData":{"mapPath":"map.w3x"},"players":[
+            {"name":"One","slot":1,"slotStatus":2,"slotType":0,"team":0,"isSelf":false,"isObserver":false,"teamChangeEnabled":true}
+        ]}))
+        .unwrap();
+        let mut queue = Announcements::default();
+        let mut lookup = crate::ladder::lookup::Lookup::default();
+        let settings = Welcome::default();
+        assert!(settings.validate().is_ok());
+        queue.joined("One");
+        let first = queue.next(&roster, &settings, 0, &mut lookup).unwrap();
+        assert!(
+            first.payload["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("Welcome to w3ladder.net, One!")
+        );
+        assert!(queue.next(&roster, &settings, 0, &mut lookup).is_none());
+        let second = queue.next(&roster, &settings, 1, &mut lookup).unwrap();
+        assert!(
+            second.payload["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("Добро пожаловать")
+        );
+        assert!(queue.next(&roster, &settings, 2, &mut lookup).is_none());
+        queue.joined("One");
+        queue.next(&roster, &settings, 3, &mut lookup).unwrap();
+        queue.left("One");
+        assert!(queue.next(&roster, &settings, 4, &mut lookup).is_none());
     }
 }

@@ -30,6 +30,7 @@ pub(super) fn chat_command(
         elapsed.as_millis() as u64,
         crate::commands::Context {
             status: &engine.lobby_status(now),
+            status_ru: &engine.lobby_status_ru(now),
             history,
         },
     );
@@ -37,9 +38,9 @@ pub(super) fn chat_command(
         outcome.start = false;
         outcome.reply = Some(Command::new(
             "SendGameChatMessage",
-            json!({"content":format!(
-                "Vote passed, but start is blocked. {} Vote again once ready.",
-                engine.lobby_status(now)
+            json!({"content":crate::i18n::both(
+                format!("Vote passed, but start is blocked. {} Vote again once ready.", engine.lobby_status(now)),
+                format!("Голосование прошло, но старт пока невозможен. {} Проголосуйте снова позже.", engine.lobby_status_ru(now)),
             )}),
         ));
     }

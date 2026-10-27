@@ -85,6 +85,22 @@ impl ChatCommand {
         }
     }
 
+    pub fn description_ru(self) -> &'static str {
+        match self {
+            Self::VoteStart => "Старт по большинству голосов. Зрители не голосуют; голоса действуют 60 секунд.",
+            Self::VoteCancel => "Отозвать свои голоса за старт и кик.",
+            Self::VoteKick => "?vk <имя>. Нужно от 3 игроков; большинство остальных должно согласиться за 60 секунд.",
+            Self::Players => "Число игроков и голосов за старт.",
+            Self::Help => "Список команд. ?help <команда> — подробнее.",
+            Self::Status => "Условие старта, чего ждём и текущие голоса.",
+            Self::Yes => "Поддержать голосование. Если идут оба: ?yes start или ?yes kick.",
+            Self::From => "?from [имя] — регион Battle.net (не страна).",
+            Self::Map => "Название и файл текущей карты с версией.",
+            Self::Color => "?color <цвет> — сменить свой цвет, если карта разрешает.",
+            Self::Stats => "?stats [имя] — победы, поражения и место в рейтинге w3ladder.",
+        }
+    }
+
     /// Short forms players can type instead of the full name.
     pub fn short(self) -> Option<&'static str> {
         match self {

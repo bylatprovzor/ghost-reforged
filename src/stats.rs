@@ -92,24 +92,24 @@ impl History {
 
     pub fn describe(&self, name: &str) -> String {
         if self.unavailable {
-            return "Statistics unavailable; existing history has been preserved.".into();
+            return "Statistics unavailable; existing history has been preserved. / Статистика недоступна, история сохранена.".into();
         }
         let record = self.book.players.get(&name.to_lowercase());
         match record {
-            Some(r) => format!(
-                "[{}] {} game(s) started in this bot's lobbies | first seen {} | last seen {} (UTC).",
-                r.name,
-                r.games,
-                date(r.first_seen),
-                date(r.last_seen)
-            ),
-            None => format!("No history for {name} on this bot yet."),
+            Some(r) => {
+                let (first, last) = (date(r.first_seen), date(r.last_seen));
+                crate::i18n::both(
+                    format!("[{}] {} game(s) started in this bot's lobbies | first seen {first} | last seen {last} (UTC).", r.name, r.games),
+                    format!("Игр в лобби бота: {} | впервые {first} | последний раз {last} (UTC).", r.games),
+                )
+            }
+            None => crate::i18n::both(format!("No history for {name} on this bot yet."), format!("У {name} пока нет игр с этим ботом.")),
         }
     }
 
     pub fn resolve(&self, name: &str) -> Result<String, &'static str> {
         if self.unavailable {
-            return Err("Statistics unavailable; existing history has been preserved.");
+            return Err("Statistics unavailable; existing history has been preserved. / Статистика недоступна, история сохранена.");
         }
         if let Some(record) = self.book.players.get(&name.to_lowercase()) {
             return Ok(record.name.clone());
@@ -121,10 +121,10 @@ impl History {
                 .is_some_and(|short| short.eq_ignore_ascii_case(name))
         });
         let Some(record) = matches.next() else {
-            return Err("No history for that player on this bot yet.");
+            return Err("No history for that player on this bot yet. / У этого игрока пока нет игр с этим ботом.");
         };
         if matches.next().is_some() {
-            return Err("That name is ambiguous. Use the full BattleTag.");
+            return Err("That name is ambiguous. Use the full BattleTag. / Таких имён несколько. Напишите полный BattleTag.");
         }
         Ok(record.name.clone())
     }

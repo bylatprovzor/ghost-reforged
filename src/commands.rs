@@ -12,6 +12,7 @@ pub use color::ColorRequest;
 #[derive(Default)]
 pub struct Context<'a> {
     pub status: &'a str,
+    pub status_ru: &'a str,
     pub history: Option<&'a crate::stats::History>,
 }
 
@@ -232,13 +233,15 @@ impl LobbyCommands {
                 self.votes.insert(key.clone());
                 start = self.votes.len() >= required;
                 if start {
-                    "Vote passed. Requesting game start.".into()
+                    crate::i18n::both("Vote passed. Starting the game.", "Голосование прошло. Запускаем игру.")
                 } else {
-                    format!(
-                        "Start vote: {}/{} needed. Vote with ?votestart.",
-                        self.votes.len(),
-                        required
-                    )
+                    {
+                        let (have, need) = (self.votes.len(), required);
+                        crate::i18n::both(
+                            format!("Start vote: {have}/{need}. Vote with ?vs."),
+                            format!("Голосование за старт: {have}/{need}. Голосуйте: ?vs."),
+                        )
+                    }
                 }
             }
             ChatCommand::VoteCancel => {
@@ -246,24 +249,24 @@ impl LobbyCommands {
                 if let Some(vote) = &mut self.kick {
                     vote.voters.remove(&key);
                 }
-                format!(
-                    "Your votes were withdrawn. Start vote: {}/{} needed.",
-                    self.votes.len(),
-                    required
-                )
+                {
+                    let (have, need) = (self.votes.len(), required);
+                    crate::i18n::both(
+                        format!("Your votes were withdrawn. Start vote: {have}/{need}."),
+                        format!("Ваши голоса отозваны. За старт: {have}/{need}."),
+                    )
+                }
             }
             ChatCommand::VoteKick => {
                 let (message, target) = self.vote_kick(&key, argument.trim(), now);
                 kick = target;
                 message
             }
-            ChatCommand::Players => self.counts(required),
+            ChatCommand::Players => crate::i18n::both(self.counts(required), self.counts_ru(required)),
             ChatCommand::Help => info::help(settings, argument),
-            ChatCommand::Status => format!(
-                "{} {}{}",
-                context.status,
-                self.counts(required),
-                self.kick_status()
+            ChatCommand::Status => crate::i18n::both(
+                format!("{} {}{}", context.status, self.counts(required), self.kick_status()),
+                format!("{} {}{}", context.status_ru, self.counts_ru(required), self.kick_status_ru()),
             ),
             ChatCommand::From => info::regions(self.current.as_ref().unwrap(), argument),
             ChatCommand::Map => info::map(self.current.as_ref().unwrap()),
@@ -289,19 +292,21 @@ impl LobbyCommands {
                 let kick_active = self.kick.is_some() && settings.enabled(ChatCommand::VoteKick);
                 match argument.to_ascii_lowercase().as_str() {
                     "" if start_active && kick_active => {
-                        "Two votes are active. Use ?yes start or ?yes kick.".into()
+                        crate::i18n::both("Two votes are active. Use ?yes start or ?yes kick.", "Идут два голосования. Пишите ?yes start или ?yes kick.")
                     }
                     "" | "start" if start_active && argument != "kick" => {
                         self.votes.insert(key.clone());
                         start = self.votes.len() >= required;
                         if start {
-                            "Vote passed. Requesting game start.".into()
+                            crate::i18n::both("Vote passed. Starting the game.", "Голосование прошло. Запускаем игру.")
                         } else {
-                            format!(
-                                "Start vote: {}/{} needed. Vote with ?yes.",
-                                self.votes.len(),
-                                required
-                            )
+                            {
+                                let (have, need) = (self.votes.len(), required);
+                                crate::i18n::both(
+                                    format!("Start vote: {have}/{need}. Vote with ?yes."),
+                                    format!("Голосование за старт: {have}/{need}. Голосуйте: ?yes."),
+                                )
+                            }
                         }
                     }
                     "" | "kick" if kick_active => {
@@ -310,8 +315,8 @@ impl LobbyCommands {
                         kick = request;
                         reply
                     }
-                    "" | "start" | "kick" => "No matching vote is active.".into(),
-                    _ => "Use ?yes, ?yes start or ?yes kick.".into(),
+                    "" | "start" | "kick" => crate::i18n::both("No matching vote is active.", "Такого голосования сейчас нет."),
+                    _ => crate::i18n::both("Use ?yes, ?yes start or ?yes kick.", "Пишите ?yes, ?yes start или ?yes kick."),
                 }
             }
         };
@@ -333,7 +338,7 @@ impl LobbyCommands {
         now: u64,
     ) -> (String, Option<KickTarget>) {
         if self.roster.len() < 3 {
-            return ("Kick votes need at least 3 players.".into(), None);
+            return (crate::i18n::both("Kick votes need at least 3 players.", "Для кика нужно минимум 3 игрока."), None);
         }
         let mut matches = self.roster.iter().filter(|p| {
             p.name.eq_ignore_ascii_case(name)
@@ -343,20 +348,20 @@ impl LobbyCommands {
                     .is_some_and(|short| short.eq_ignore_ascii_case(name))
         });
         let Some(target) = matches.next().cloned() else {
-            return ("Use ?votekick <player name>.".into(), None);
+            return (crate::i18n::both("Use ?vk <player name>.", "Пишите ?vk <имя игрока>."), None);
         };
         if matches.next().is_some() {
             return (
-                "That name is ambiguous. Use the full player name.".into(),
+                crate::i18n::both("That name is ambiguous. Use the full player name.", "Таких имён несколько. Напишите имя полностью."),
                 None,
             );
         }
         if &target == sender {
-            return ("You cannot vote to kick yourself.".into(), None);
+            return (crate::i18n::both("You cannot vote to kick yourself.", "Нельзя голосовать за кик самого себя."), None);
         }
         if self.kick.as_ref().is_some_and(|vote| vote.target != target) {
             return (
-                "A kick vote is already open for another player.".into(),
+                crate::i18n::both("A kick vote is already open for another player.", "Уже идёт голосование за кик другого игрока."),
                 None,
             );
         }
@@ -371,7 +376,7 @@ impl LobbyCommands {
             let slot = self.slots[&target];
             self.kick = None;
             (
-                format!("Kick vote passed for {}.", target.name),
+                crate::i18n::both(format!("Kick vote passed for {}.", target.name), format!("Голосование прошло: {} исключён.", target.name)),
                 Some(KickTarget {
                     lobby: self.lobby.clone(),
                     player: target,
@@ -381,13 +386,13 @@ impl LobbyCommands {
             )
         } else {
             (
-                format!(
-                    "Kick {}: {}/{} votes. Use ?votekick {}.",
-                    target.name,
-                    vote.voters.len(),
-                    needed,
-                    target.name
-                ),
+                {
+                    let (name, have) = (&target.name, vote.voters.len());
+                    crate::i18n::both(
+                        format!("Kick {name}: {have}/{needed} votes. Use ?vk {name}."),
+                        format!("Кик {name}: {have}/{needed} голосов. Голосуйте: ?vk {name}."),
+                    )
+                },
                 None,
             )
         }
@@ -405,6 +410,24 @@ impl LobbyCommands {
                 )
             })
             .unwrap_or_default()
+    }
+
+    fn kick_status_ru(&self) -> String {
+        self.kick
+            .as_ref()
+            .map(|v| {
+                format!(
+                    " Кик {}: {}/{} голосов.",
+                    v.target.name,
+                    v.voters.len(),
+                    (self.roster.len() - 1) / 2 + 1
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    fn counts_ru(&self, required: usize) -> String {
+        format!("Игроков: {}. За старт: {}/{}.", self.roster.len(), self.votes.len(), required)
     }
 
     fn counts(&self, required: usize) -> String {

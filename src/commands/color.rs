@@ -78,24 +78,24 @@ pub(super) fn request(lobby: &Lobby, sender: &str, name: &str) -> (String, Optio
         .position(|c| *c == normalized)
         .map(|c| c as u8)
     else {
-        return (format!("Use ?color <{}>.", COLORS.join("|")), None);
+        return (crate::i18n::both(format!("Use ?color <{}>.", COLORS.join("|")), format!("Пишите ?color <{}>.", COLORS.join("|"))), None);
     };
     let Some(player) = lobby
         .players
         .iter()
         .find(|p| p.name == sender && p.slot_status == 2 && p.slot_type == 0 && !p.is_self)
     else {
-        return ("Player no longer in the lobby.".into(), None);
+        return (crate::i18n::both("Player no longer in the lobby.", "Игрок уже вышел из лобби."), None);
     };
     if player.color == Some(color) {
         return (
-            format!("{sender} is already {}.", COLORS[color as usize]),
+            crate::i18n::both(format!("{sender} is already {}.", COLORS[color as usize]), format!("У {sender} уже цвет {}.", COLORS[color as usize])),
             None,
         );
     }
     if !allowed(lobby, player, color) {
         return (
-            "That color is unavailable or locked by the map.".into(),
+            crate::i18n::both("That color is unavailable or locked by the map.", "Этот цвет занят или запрещён картой."),
             None,
         );
     }
@@ -140,14 +140,14 @@ impl ColorRequest {
     }
     pub(crate) fn response(&self, success: bool) -> String {
         if success {
-            format!(
-                "{}: color changed to {}.",
-                self.player.name, COLORS[self.color as usize]
+            crate::i18n::both(
+                format!("{}: color changed to {}.", self.player.name, COLORS[self.color as usize]),
+                format!("{}: цвет изменён на {}.", self.player.name, COLORS[self.color as usize]),
             )
         } else {
-            format!(
-                "{}: color change was not applied. The lobby or map settings may have changed.",
-                self.player.name
+            crate::i18n::both(
+                format!("{}: color change was not applied. The lobby or map settings may have changed.", self.player.name),
+                format!("{}: цвет не изменился. Возможно, поменялись настройки лобби или карты.", self.player.name),
             )
         }
     }

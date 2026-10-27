@@ -60,4 +60,56 @@ impl Engine {
         };
         format!("{condition} {reason}")
     }
+
+    pub fn lobby_status_ru(&self, now: u64) -> String {
+        match self.phase {
+            Phase::Starting(_) => {
+                return "Идёт отсчёт Warcraft или загрузка.".into();
+            }
+            Phase::Countdown(until) => {
+                return format!("Старт через {} с.", until.saturating_sub(now));
+            }
+            _ => {}
+        }
+        let Some(lobby) = self.owned_lobby(now) else {
+            return "Ждём обновления лобби.".into();
+        };
+        let humans = lobby.humans(self.config.count_host);
+        let condition = if self.config.require_full {
+            let open = lobby
+                .players
+                .iter()
+                .filter(|p| p.slot_status == 0 && !p.is_observer && p.team != OBSERVER_TEAM)
+                .count();
+            format!("Автостарт: полное лобби; свободных мест {open}, игроков {humans}.")
+        } else {
+            format!(
+                "Автостарт: игроков {humans}/{}; нужно ещё {}.",
+                self.config.min_players,
+                (self.config.min_players as usize).saturating_sub(humans)
+            )
+        };
+        let reason = if self.config.host_mode == HostMode::Observer
+            && lobby.local().is_none_or(|p| !p.is_observer)
+        {
+            "Ждём, пока хост займёт место зрителя.".into()
+        } else if !self.ladder_allows_start(lobby) {
+            if lobby.humans(true) < 4 {
+                "Для рейтинга нужно минимум 4 игрока.".into()
+            } else {
+                "Ждём подготовки рейтинга.".into()
+            }
+        } else if !self.config.auto_start {
+            "Автостарт выключен; ждём голосования ?vs или хоста.".into()
+        } else if now < self.retry_start_after {
+            format!("Повтор старта через {} с.", self.retry_start_after - now)
+        } else if self.cancelled_roster.as_ref() == Some(&lobby.start_signature()) {
+            "Прошлый старт отменён; ждём смены игроков или нового голосования.".into()
+        } else if humans == 0 {
+            "Ждём игроков.".into()
+        } else {
+            "Ждём условия старта и готовности Warcraft.".into()
+        };
+        format!("{condition} {reason}")
+    }
 }
