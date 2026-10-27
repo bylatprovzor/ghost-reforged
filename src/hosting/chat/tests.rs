@@ -358,12 +358,10 @@ fn start_vote_reports_ladder_gate_instead_of_promising_a_countdown() {
                     &mut actions,
                 );
                 assert!(outcome.start);
-                assert!(
-                    actions.last().unwrap().payload["content"]
-                        .as_str()
-                        .unwrap()
-                        .contains("Vote passed. Starting the game")
-                );
+                // Replies queue in order; the Russian half of the earlier
+                // blocked notice may still be ahead of this one.
+                let mut texts = actions.iter().filter_map(|c| c.payload["content"].as_str());
+                assert!(texts.any(|t| t.contains("Vote passed. Starting the game") || t.starts_with("Голосование прошло, но")));
                 assert_eq!(engine.start_now(5)[0].message, "LobbyStart");
             }
         }
