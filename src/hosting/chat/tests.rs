@@ -240,11 +240,7 @@ fn unread_chat_does_not_delay_departure_cancellation_and_replies_survive_the_bur
         Duration::from_millis(2250),
         &mut actions,
     );
-    assert!(actions.iter().any(|c| {
-        c.payload["content"]
-            .as_str()
-            .is_some_and(|t| t.starts_with("Map:"))
-    }));
+    assert!(said(&actions, &chat).iter().any(|t| t.starts_with("Map:")));
 }
 
 #[test]
