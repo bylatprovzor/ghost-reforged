@@ -102,17 +102,17 @@ mod tests {
             tags.iter().enumerate().map(|(slot, tag)| json!({"slot":slot,
                 "battletag":tag,"wins":1,"losses":2,"rank":1,"mmr":1000,"mmr_games":3})).collect::<Vec<_>>()});
         let profiles = validate_for(&data.to_string(), &tags, true).unwrap();
-        assert_eq!(profiles[0].mmr_summary(), "MMR: 1000, Rank: #1");
+        assert_eq!(profiles[0].mmr_summary(), "MMR: 1000, Rank: #1, Wins: 1, Loss: 2");
         data["players"][0]["mmr_games"] = json!(2);
         assert!(validate_for(&data.to_string(), &tags, true).is_err());
         data["players"][0]["rank"] = serde_json::Value::Null;
         let profiles = validate_for(&data.to_string(), &tags, true).unwrap();
-        assert_eq!(profiles[0].mmr_summary(), "MMR: 1000 (provisional), Rank: ???");
+        assert_eq!(profiles[0].mmr_summary(), "MMR: 1000 (provisional), Rank: ???, Wins: 1, Loss: 2");
         data["minimum_games"] = json!(10);
         assert!(validate_for(&data.to_string(), &tags, true).is_err());
         for p in data["players"].as_array_mut().unwrap() { p["rank"] = serde_json::Value::Null; }
         let old = validate_for(&data.to_string(), &tags, true).unwrap();
-        assert_eq!(old[1].mmr_summary(), "MMR: 1000 (provisional), Rank: ???");
+        assert_eq!(old[1].mmr_summary(), "MMR: 1000 (provisional), Rank: ???, Wins: 1, Loss: 2");
     }
 
     #[test]

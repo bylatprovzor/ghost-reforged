@@ -40,8 +40,10 @@ impl Profile {
             ""
         };
         format!(
-            "MMR: {value}{provisional}, Rank: {}",
-            self.rank.map_or_else(|| "???".into(), |r| format!("#{r}"))
+            "MMR: {value}{provisional}, Rank: {}, Wins: {}, Loss: {}",
+            self.rank.map_or_else(|| "???".into(), |r| format!("#{r}")),
+            self.wins,
+            self.losses
         )
     }
 

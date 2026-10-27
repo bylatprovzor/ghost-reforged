@@ -17,7 +17,7 @@ impl Default for Welcome {
     fn default() -> Self {
         Self {
             enabled: true,
-            message: "Welcome to w3ladder.net, #{playername}! Ranked ladder and regular tournaments: join our community! Commands: ?help".into(),
+            message: "Welcome to w3ladder.net, #{playername}! {stats}. Ranked ladder and tournaments: join our community! Commands: ?help".into(),
             second: "Добро пожаловать на w3ladder.net! Рейтинг и постоянные турниры: присоединяйся к сообществу! Команды: ?help".into(),
         }
     }

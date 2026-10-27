@@ -29,7 +29,7 @@ fn only_an_explicit_missing_player_is_an_unranked_zero_record() {
         decode(404, r#"{"error":"player_not_found"}"#, "New#1234")
             .unwrap()
             .mmr_summary(),
-        "MMR: 1500 (provisional), Rank: ???"
+        "MMR: 1500 (provisional), Rank: ???, Wins: 0, Loss: 0"
     );
     assert_eq!(
         decode(404, r#"{"error":"player_not_found"}"#, "New#1234")
@@ -154,7 +154,7 @@ fn mmr_summary_is_limited_to_supported_survival_chaos_maps() {
     .unwrap();
     assert_eq!(
         lookup.query("Player#1234", 1).unwrap(),
-        "MMR: 1000 (provisional), Rank: ???"
+        "MMR: 1000 (provisional), Rank: ???, Wins: 0, Loss: 0"
     );
     room.map_data.map_name = "An unrelated map".into();
     lookup.observe(Some(&room));

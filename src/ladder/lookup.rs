@@ -9,7 +9,7 @@ use std::{
 };
 
 pub const UNKNOWN: &str = "Wins: ???, Loss: ???, Rank: ???";
-const MMR_UNKNOWN: &str = "MMR: ???, Rank: ???";
+const MMR_UNKNOWN: &str = "MMR: ???, Rank: ???, Wins: ???, Loss: ???";
 
 pub fn fetch_player(tag: &str) -> Result<Profile, Error> {
     let agent = ureq::Agent::config_builder()
