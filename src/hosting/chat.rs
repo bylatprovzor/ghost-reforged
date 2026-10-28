@@ -98,13 +98,21 @@ impl Chat {
             gated: Default::default(),
         }
     }
-    /// A lobby admin holds the start (?stop or a reserved slot).
+    /// A lobby admin holds the start (?stop or a seat held with ?reserve).
     pub fn admin_hold(&self) -> bool {
         self.admin.holds_start()
     }
-    /// Kicks and slot edits requested by lobby admins since the last call.
+    /// Kicks requested by lobby admins and the MMR gate since the last call,
+    /// each slot once.
     pub fn take_admin_actions(&mut self) -> Vec<super::lobby_admin::Action> {
-        std::mem::take(&mut self.admin_actions)
+        let mut actions = std::mem::take(&mut self.admin_actions);
+        let mut seen = Vec::new();
+        actions.retain(|action| {
+            let fresh = !seen.contains(action);
+            seen.push(*action);
+            fresh
+        });
+        actions
     }
     pub fn apply_settings(&mut self, settings: &crate::commands::CommandSettings) {
         self.commands.apply_settings(settings);

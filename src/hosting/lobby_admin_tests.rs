@@ -64,34 +64,64 @@ fn stop_holds_until_go_or_the_admin_leaves() {
     assert!(lines[0].contains("auto start is back on"));
 }
 
+/// Seat `slot` (1..=4) taken by `name`.
+fn join(lobby: &mut Lobby, slot: usize, name: &str) {
+    lobby.players[slot].slot_status = 2;
+    lobby.players[slot].name = name.into();
+}
+
+fn leave(lobby: &mut Lobby, slot: usize) {
+    lobby.players[slot].slot_status = 0;
+    lobby.players[slot].name = String::new();
+}
+
 #[test]
-fn a_reserved_slot_closes_opens_when_full_and_is_kept_for_its_player() {
+fn a_held_seat_never_touches_slots_and_the_last_arrival_makes_room() {
     let mut a = admin();
-    let lobby = room(&["Boss#1", "Guest#2"]);
+    let mut lobby = room(&["Boss#1", "Guest#2"]);
     a.observe(&lobby, 0);
-    let (_, actions, _) = a
+    let (reply, actions, _) = a
         .handle(&say("Boss#1", "?reserve Friend"), &lobby, 1)
         .unwrap();
-    assert_eq!(actions, vec![Action::Close(4)]);
+    assert!(actions.is_empty() && reply.contains("Holding a seat for Friend"));
     assert!(a.holds_start());
-    // Slot 4 closed; slot 3 still free: nothing to do.
-    let mut lobby = room(&["Boss#1", "Guest#2"]);
-    lobby.players[4].slot_status = 1;
+    // Seat 4 fills first, then seat 3: the lobby is full, and the player who
+    // joined last (seat 3, not the highest seat) is the one asked to leave.
+    join(&mut lobby, 4, "Third#3");
     assert!(a.observe(&lobby, 5).0.is_empty());
-    // Slot 3 taken: the lobby is otherwise full, so open the reserved slot.
-    lobby.players[3].slot_status = 2;
-    lobby.players[3].name = "Third#3".into();
-    assert_eq!(a.observe(&lobby, 6).0, vec![Action::Open(4)]);
-    // Someone else takes it: kicked.
-    lobby.players[4].slot_status = 2;
-    lobby.players[4].name = "Stranger#4".into();
-    let (actions, lines) = a.observe(&lobby, 10);
-    assert_eq!(actions, vec![Action::Kick(4)]);
-    assert!(lines[0].contains("reserved for Friend"));
-    // The reserved player arrives: the reservation ends.
-    lobby.players[4].name = "Friend#77".into();
-    let (actions, lines) = a.observe(&lobby, 14);
+    join(&mut lobby, 3, "Fourth#4");
+    let (actions, lines) = a.observe(&lobby, 6);
+    assert_eq!(actions, vec![Action::Kick(3)]);
+    assert!(lines[0].contains("Fourth#4: the last seat is kept for Friend"));
+    // One request at a time while Warcraft applies the kick.
+    assert!(a.observe(&lobby, 7).0.is_empty());
+    leave(&mut lobby, 3);
+    assert!(a.observe(&lobby, 10).0.is_empty());
+    assert!(a.holds_start());
+    // The awaited player arrives: the reservation ends and the start may go.
+    join(&mut lobby, 3, "Friend#77");
+    let (actions, lines) = a.observe(&lobby, 11);
     assert!(actions.is_empty() && lines[0].contains("Friend is here"));
+    assert!(!a.holds_start());
+}
+
+#[test]
+fn a_full_lobby_with_an_admin_last_is_told_once_and_nobody_is_kicked() {
+    let mut a = LobbyAdmin {
+        admins: Admins::with(&["Boss#1", "Mod#5"]),
+        ..LobbyAdmin::default()
+    };
+    let mut lobby = room(&["Boss#1", "Guest#2", "Third#3"]);
+    a.observe(&lobby, 0);
+    a.handle(&say("Boss#1", "?reserve Friend"), &lobby, 1)
+        .unwrap();
+    join(&mut lobby, 4, "Mod#5");
+    let (actions, lines) = a.observe(&lobby, 5);
+    assert!(actions.is_empty() && lines[0].contains("?open to start without Friend"));
+    assert!(a.observe(&lobby, 10).1.is_empty());
+    assert!(a.holds_start());
+    let (reply, actions, _) = a.handle(&say("Boss#1", "?open"), &lobby, 11).unwrap();
+    assert!(actions.is_empty() && reply.contains("no longer held"));
     assert!(!a.holds_start());
 }
 
@@ -102,24 +132,31 @@ fn open_cancels_the_reservation_and_the_admin_leaving_does_too() {
     a.observe(&lobby, 0);
     a.handle(&say("Boss#1", "?reserve Friend#9"), &lobby, 1)
         .unwrap();
-    let mut closed = room(&["Boss#1"]);
-    closed.players[4].slot_status = 1;
-    let (_, actions, _) = a.handle(&say("Boss#1", "?open"), &closed, 2).unwrap();
-    assert_eq!(actions, vec![Action::Open(4)]);
-    // The start waits until Warcraft shows the slot open again.
-    assert!(a.holds_start());
-    a.observe(&lobby, 2);
+    let (reply, _, _) = a
+        .handle(&say("Boss#1", "?reserve Other#8"), &lobby, 2)
+        .unwrap();
+    assert!(reply.contains("already held for Friend#9"));
+    let (reply, actions, _) = a.handle(&say("Boss#1", "?open"), &lobby, 2).unwrap();
+    assert!(actions.is_empty() && reply.contains("Friend#9 is no longer held"));
     assert!(!a.holds_start());
+    let (reply, _, _) = a.handle(&say("Boss#1", "?open"), &lobby, 3).unwrap();
+    assert!(reply.contains("No seat is held"));
     a.handle(&say("Boss#1", "?reserve Friend#9"), &lobby, 3)
         .unwrap();
-    let mut gone = room(&[]);
-    gone.players[4].slot_status = 1;
-    let (actions, _) = a.observe(&gone, 4);
-    assert_eq!(actions, vec![Action::Open(4)]);
-    assert!(a.holds_start());
-    // Still closed later: the bot asks again.
-    assert_eq!(a.observe(&gone, 10).0, vec![Action::Open(4)]);
-    a.observe(&room(&[]), 11);
+    let (actions, lines) = a.observe(&room(&[]), 4);
+    assert!(actions.is_empty() && lines[0].contains("Boss#1 left"));
+    assert!(!a.holds_start());
+}
+
+#[test]
+fn a_full_lobby_cannot_hold_a_seat() {
+    let mut a = admin();
+    let lobby = room(&["Boss#1", "Guest#2", "Third#3", "Fourth#4"]);
+    a.observe(&lobby, 0);
+    let (reply, actions, _) = a
+        .handle(&say("Boss#1", "?reserve Friend"), &lobby, 1)
+        .unwrap();
+    assert!(actions.is_empty() && reply.contains("The lobby is full"));
     assert!(!a.holds_start());
 }
 

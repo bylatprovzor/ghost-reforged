@@ -334,18 +334,6 @@ pub(super) fn run(
                         .kick_target(slot)
                         .and_then(|target| manual_kick.request(target, &engine, now))
                         .is_some(),
-                    Action::Open(slot) | Action::Close(slot) => {
-                        let wanted = if matches!(action, Action::Open(_)) {
-                            slots::SlotAction::Open
-                        } else {
-                            slots::SlotAction::Close
-                        };
-                        snapshot
-                            .slot_actions(slot)
-                            .into_iter()
-                            .find(|(kind, _)| *kind == wanted)
-                            .is_some_and(|(_, request)| slot_edit.request(request, &engine, now))
-                    }
                 };
                 if !accepted {
                     let _ = tx.send(Event::Activity(Activity::Command(format!(

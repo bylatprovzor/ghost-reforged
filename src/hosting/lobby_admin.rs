@@ -1,4 +1,9 @@
-//! Lobby admins may kick a player, hold the start and reserve a slot.
+//! Lobby admins may kick a player, hold the start and hold a seat for someone.
+//!
+//! The bot never closes or reopens seats for a reservation: the ranked map
+//! needs its four player seats and twelve computer seats exactly as created.
+//! A held seat is protected by holding the start and, when the lobby fills
+//! without the awaited player, by kicking whoever joined last.
 //!
 //! An admin is a BattleTag listed in `lobby-admins.txt` (one per line, next to
 //! the profile store) or granted "lobby admin" on w3ladder.net. Senders are the
@@ -9,7 +14,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread,
@@ -18,15 +23,13 @@ use std::{
 
 const READ_SECONDS: u64 = 30;
 const FETCH_SECONDS: u64 = 60;
-/// Wait for an applied slot or kick before asking for the next one.
+/// Wait for an applied kick before asking for the next one.
 const SETTLE_SECONDS: u64 = 3;
 pub const FILE: &str = "lobby-admins.txt";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Kick(u8),
-    Close(u8),
-    Open(u8),
 }
 
 #[derive(Default)]
@@ -154,7 +157,8 @@ impl Admins {
 struct Reserve {
     player: String,
     by: String,
-    slot: u8,
+    /// The lobby filled up with an admin last: they were told once.
+    told_full: bool,
 }
 
 #[derive(Default)]
@@ -163,9 +167,9 @@ pub(super) struct LobbyAdmin {
     lobby: String,
     hold: Option<String>,
     reserve: Option<Reserve>,
-    /// A slot closed for a reservation that has ended: the start waits until
-    /// Warcraft confirms it is open again, so no game starts one seat short.
-    reopen: Option<u8>,
+    /// Arrival order of the players in the lobby, to find the last one.
+    seen: BTreeMap<String, u64>,
+    arrivals: u64,
     settle_until: u64,
 }
 
@@ -199,7 +203,7 @@ impl LobbyAdmin {
 
     /// Whether auto start and start votes must wait.
     pub fn holds_start(&self) -> bool {
-        self.hold.is_some() || self.reserve.is_some() || self.reopen.is_some()
+        self.hold.is_some() || self.reserve.is_some()
     }
 
     fn settled(&mut self, now: u64) -> bool {
@@ -210,8 +214,9 @@ impl LobbyAdmin {
         true
     }
 
-    /// Follows the roster: admins leaving release their hold, an arriving
-    /// player ends the reservation, a full lobby opens the reserved slot.
+    /// Follows the roster: an admin leaving releases their hold and the seat
+    /// they hold, the awaited player arriving ends the reservation, and a
+    /// lobby that fills up without them loses its last arrival.
     pub fn observe(&mut self, lobby: &Lobby, now: u64) -> (Vec<Action>, Vec<String>) {
         self.admins.refresh(now);
         if lobby.lobby_name != self.lobby {
@@ -223,7 +228,15 @@ impl LobbyAdmin {
         }
         let mut actions = Vec::new();
         let mut lines = Vec::new();
-        let here = |name: &str| humans(lobby).any(|p| p.name == name);
+        let present: BTreeSet<String> = humans(lobby).map(|p| p.name.clone()).collect();
+        self.seen.retain(|name, _| present.contains(name));
+        for name in &present {
+            if !self.seen.contains_key(name) {
+                self.arrivals += 1;
+                self.seen.insert(name.clone(), self.arrivals);
+            }
+        }
+        let here = |name: &str| present.contains(name);
         if let Some(by) = &self.hold
             && !here(by)
         {
@@ -233,25 +246,12 @@ impl LobbyAdmin {
             ));
             self.hold = None;
         }
-        if let Some(slot) = self.reopen {
-            let closed = lobby
-                .players
-                .iter()
-                .any(|p| p.slot == slot && p.slot_status == 1);
-            if !closed {
-                self.reopen = None;
-            } else if self.settled(now) {
-                actions.push(Action::Open(slot));
-            }
-        }
         let Some(reserve) = &self.reserve else {
             return (actions, lines);
         };
-        let (player, by, reserved) = (reserve.player.clone(), reserve.by.clone(), reserve.slot);
-        let slot = lobby.players.iter().find(|p| p.slot == reserved);
-        let arrived = humans(lobby).any(|p| same(&p.name, &player));
-        let closed = slot.is_some_and(|p| p.slot_status == 1);
-        if arrived || !here(&by) || slot.is_none() {
+        let (player, by) = (reserve.player.clone(), reserve.by.clone());
+        let arrived = present.iter().any(|name| same(name, &player));
+        if arrived || !here(&by) {
             lines.push(if arrived {
                 both(
                     format!("{player} is here: the reservation is over."),
@@ -259,50 +259,53 @@ impl LobbyAdmin {
                 )
             } else {
                 both(
-                    format!("{by} left: the reserved slot is open again."),
-                    format!("{by} вышел: зарезервированный слот снова открыт."),
+                    format!("{by} left: the seat for {player} is no longer held."),
+                    format!("{by} вышел: место для {player} больше не держим."),
                 )
             });
-            if closed {
-                actions.push(Action::Open(reserved));
-                self.reopen = Some(reserved);
-            }
             self.reserve = None;
             return (actions, lines);
         }
-        let other_open = lobby
+        if !lobby.full() {
+            if let Some(reserve) = &mut self.reserve {
+                reserve.told_full = false;
+            }
+            return (actions, lines);
+        }
+        // The lobby filled up without the awaited player: whoever joined last
+        // leaves room for them. Admins are never kicked; the one who joined
+        // last is told how to start without the awaited player instead.
+        let last = lobby
             .players
             .iter()
-            .any(|p| p.slot != reserved && p.slot_status == 0 && playing(p));
-        let intruder = slot
-            .filter(|p| p.slot_status == 2 && p.slot_type == 0 && !p.is_self)
-            .map(|p| p.slot);
-        if let Some(intruder) = intruder {
-            // Someone other than the reserved player took the reserved slot.
-            if self.settled(now) {
+            .filter(|p| p.slot_status == 2 && p.slot_type == 0 && playing(p))
+            .filter_map(|p| self.seen.get(&p.name).map(|order| (*order, p)))
+            .max_by_key(|(order, _)| *order)
+            .map(|(_, p)| (p.name.clone(), p.slot));
+        let Some((name, slot)) = last else {
+            return (actions, lines);
+        };
+        if self.admins.contains(&name) {
+            if let Some(reserve) = &mut self.reserve
+                && !reserve.told_full
+            {
+                reserve.told_full = true;
                 lines.push(both(
-                    format!("This slot is reserved for {player}."),
-                    format!("Этот слот зарезервирован для {player}."),
+                    format!("The lobby is full. ?open to start without {player}."),
+                    format!("Лобби заполнено. ?open — начать без {player}."),
                 ));
-                actions.push(Action::Kick(intruder));
             }
-        } else if closed && !other_open {
-            // The lobby is otherwise full: open the slot so the reserved
-            // player can join, and keep everyone else out of it.
-            if self.settled(now) {
-                lines.push(both(
-                    format!("The lobby is full: the last slot is kept for {player}."),
-                    format!("Лобби заполнено: последний слот держим для {player}."),
-                ));
-                actions.push(Action::Open(reserved));
-            }
-        } else if !closed && other_open && self.settled(now) {
-            actions.push(Action::Close(reserved));
+        } else if self.settled(now) {
+            lines.push(both(
+                format!("{name}: the last seat is kept for {player}."),
+                format!("{name}: последнее место держим для {player}."),
+            ));
+            actions.push(Action::Kick(slot));
         }
         (actions, lines)
     }
 
-    /// Admin chat commands. Returns the reply and the lobby edits to request.
+    /// Admin chat commands. Returns the reply and the kicks to request.
     pub fn handle(
         &mut self,
         event: &Value,
@@ -352,8 +355,8 @@ impl LobbyAdmin {
         let (reply, actions) = match word.as_str() {
             "admin" => (
                 both(
-                    "Admin: ?kick <name>, ?stop (hold the start), ?go, ?reserve <name>, ?open.",
-                    "Админ: ?kick <имя>, ?stop (держать старт), ?go, ?reserve <имя>, ?open.",
+                    "Admin: ?kick <name>, ?stop (hold the start), ?go, ?reserve <name> (hold a seat), ?open (stop holding it).",
+                    "Админ: ?kick <имя>, ?stop (держать старт), ?go, ?reserve <имя> (держать место), ?open (перестать держать).",
                 ),
                 vec![],
             ),
@@ -374,7 +377,9 @@ impl LobbyAdmin {
                 (
                     match waiting {
                         Some(player) => both(
-                            format!("Start allowed. Still waiting for {player} (?open to stop)."),
+                            format!(
+                                "Start allowed. Still holding a seat for {player} (?open to stop)."
+                            ),
                             format!("Старт разрешён. Ещё ждём {player} (?open — не ждать)."),
                         ),
                         None => both("Start allowed.", "Старт разрешён."),
@@ -384,28 +389,15 @@ impl LobbyAdmin {
             }
             "reserve" => self.reserve(lobby, &me.name, argument),
             _ => match self.reserve.take() {
-                Some(reserve) => {
-                    let closed = lobby
-                        .players
-                        .iter()
-                        .any(|p| p.slot == reserve.slot && p.slot_status == 1);
-                    if closed {
-                        self.reopen = Some(reserve.slot);
-                    }
-                    (
-                        both(
-                            format!("Reservation for {} cancelled, slot open.", reserve.player),
-                            format!("Резерв для {} снят, слот открыт.", reserve.player),
-                        ),
-                        if closed {
-                            vec![Action::Open(reserve.slot)]
-                        } else {
-                            vec![]
-                        },
-                    )
-                }
+                Some(reserve) => (
+                    both(
+                        format!("The seat for {} is no longer held.", reserve.player),
+                        format!("Место для {} больше не держим.", reserve.player),
+                    ),
+                    vec![],
+                ),
                 None => (
-                    both("No slot is reserved.", "Зарезервированных слотов нет."),
+                    both("No seat is held.", "Никакое место сейчас не держим."),
                     vec![],
                 ),
             },
@@ -462,13 +454,10 @@ impl LobbyAdmin {
             return (
                 both(
                     format!(
-                        "A slot is already reserved for {}. ?open first.",
+                        "A seat is already held for {}. ?open first.",
                         reserve.player
                     ),
-                    format!(
-                        "Слот уже зарезервирован для {}. Сначала ?open.",
-                        reserve.player
-                    ),
+                    format!("Место уже держим для {}. Сначала ?open.", reserve.player),
                 ),
                 vec![],
             );
@@ -482,38 +471,30 @@ impl LobbyAdmin {
                 vec![],
             );
         }
-        let Some(slot) = lobby
-            .players
-            .iter()
-            .filter(|p| p.slot_status == 0 && playing(p))
-            .map(|p| p.slot)
-            .max()
-        else {
+        if lobby.full() {
             return (
                 both(
-                    "No free slot to reserve.",
-                    "Нет свободного слота для резерва.",
+                    "The lobby is full. Free a seat first (?kick <name>).",
+                    "Лобби заполнено. Сначала освободите место (?kick <имя>).",
                 ),
                 vec![],
             );
-        };
+        }
         self.reserve = Some(Reserve {
             player: name.to_owned(),
             by: admin.to_owned(),
-            slot,
+            told_full: false,
         });
         (
             both(
                 format!(
-                    "Slot {} is reserved for {name}. The start waits for them; ?open cancels.",
-                    slot + 1
+                    "Holding a seat for {name}; the start waits for them. Whoever takes the last seat is kicked. ?open cancels."
                 ),
                 format!(
-                    "Слот {} зарезервирован для {name}. Старт ждёт его; ?open — снять резерв.",
-                    slot + 1
+                    "Держим место для {name}, старт ждёт его. Кто займёт последнее место, будет кикнут. ?open — отменить."
                 ),
             ),
-            vec![Action::Close(slot)],
+            vec![],
         )
     }
 }
