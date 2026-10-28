@@ -65,6 +65,7 @@ struct Entry {
     job: Option<Receiver<Result<Profile, Error>>>,
     since: u64,
     text: String,
+    mmr: Option<i32>,
 }
 
 #[derive(Default)]
@@ -126,11 +127,13 @@ impl Lookup {
                 job,
                 since: now,
                 text: unknown.into(),
+                mmr: None,
             }
         });
         if let Some(rx) = &entry.job {
             match rx.try_recv() {
                 Ok(result) => {
+                    entry.mmr = result.as_ref().ok().and_then(|p| p.mmr);
                     entry.text = result.map_or_else(
                         |_| unknown.into(),
                         |p| {
@@ -156,6 +159,13 @@ impl Lookup {
             }
         }
         Some(entry.text.clone())
+    }
+
+    /// The player's w3ladder MMR: `None` while the lookup is pending,
+    /// `Some(None)` when it is unknown.
+    pub fn mmr(&mut self, tag: &str, now: u64) -> Option<Option<i32>> {
+        self.query(tag, now)?;
+        Some(self.entries.get(tag).and_then(|e| e.mmr))
     }
 }
 

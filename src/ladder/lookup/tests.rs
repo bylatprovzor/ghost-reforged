@@ -18,6 +18,7 @@ fn pending(lookup: &mut Lookup, now: u64) -> mpsc::Sender<Result<Profile, Error>
             job: Some(rx),
             since: now,
             text: UNKNOWN.into(),
+            mmr: None,
         },
     );
     tx
@@ -103,6 +104,8 @@ fn leaving_or_rehosting_discards_results_and_welcome_waits_for_the_same_record()
         message: "Welcome #{playername}! {stats}".into(),
         second: String::new(),
         whisper: false,
+        min_mmr: None,
+        max_mmr: None,
     };
     welcome.joined("Player#1234");
     assert!(welcome.next(&roster, &settings, 0, &mut lookup).is_none());
@@ -210,4 +213,25 @@ fn legacy_map_keeps_legacy_chat_and_clears_the_mmr_cache() {
         lookup.query("Player#1234", 2).unwrap(),
         "Wins: 2, Loss: 1, Rank: ???"
     );
+}
+
+#[test]
+fn mmr_is_pending_then_known_for_the_lobby_gate() {
+    let mut room = lobby();
+    room.map_data.map_name = crate::ladder::MAP_NAME.into();
+    let mut lookup = Lookup::default();
+    lookup.observe(Some(&room));
+    let tx = pending(&mut lookup, 0);
+    assert_eq!(lookup.mmr("Player#1234", 0), None);
+    tx.send(Ok(Profile {
+        slot: 0,
+        battletag: "Player#1234".into(),
+        wins: 3,
+        losses: 1,
+        rank: Some(4),
+        mmr: Some(1620),
+        mmr_games: Some(9),
+    }))
+    .unwrap();
+    assert_eq!(lookup.mmr("Player#1234", 1), Some(Some(1620)));
 }

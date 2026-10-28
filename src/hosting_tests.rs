@@ -448,6 +448,8 @@ fn live_settings_change_the_current_lobby_without_recreating_it() {
             message: "Hello #{playername}".into(),
             second: String::new(),
             whisper: false,
+            min_mmr: None,
+            max_mmr: None,
         },
     };
     let commands = dispatch(

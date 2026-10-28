@@ -80,6 +80,8 @@ pub(super) struct Chat {
     stats: Vec<String>,
     admin: super::lobby_admin::LobbyAdmin,
     admin_actions: Vec<super::lobby_admin::Action>,
+    /// Players turned away by the MMR gate, with the time of the last kick.
+    gated: std::collections::BTreeMap<String, u64>,
 }
 impl Chat {
     pub fn new(path: Option<&Path>) -> Self {
@@ -93,6 +95,7 @@ impl Chat {
             stats: Vec::new(),
             admin: super::lobby_admin::LobbyAdmin::new(path.and_then(Path::parent)),
             admin_actions: Vec::new(),
+            gated: Default::default(),
         }
     }
     /// A lobby admin holds the start (?stop or a reserved slot).
@@ -122,6 +125,65 @@ impl Chat {
     }
     pub fn started(&mut self, name: &str) {
         self.tracker.started(name, &mut self.history, unix_now());
+    }
+
+    /// Turns away players whose w3ladder MMR is outside the lobby's range.
+    fn gate(
+        &mut self,
+        engine: &Engine,
+        lobby: &crate::protocol::Lobby,
+        now: u64,
+        milliseconds: u64,
+    ) {
+        let (min, max) = (engine.config.welcome.min_mmr, engine.config.welcome.max_mmr);
+        if min.is_none() && max.is_none() {
+            self.gated.clear();
+            return;
+        }
+        let present: Vec<(String, u8)> = lobby
+            .players
+            .iter()
+            .filter(|p| {
+                p.slot_status == 2 && p.slot_type == 0 && !p.is_self && p.name.contains('#')
+            })
+            .map(|p| (p.name.clone(), p.slot))
+            .collect();
+        self.gated
+            .retain(|name, _| present.iter().any(|(n, _)| n == name));
+        for (name, slot) in present {
+            if self.admin.admins.contains(&name) {
+                continue;
+            }
+            let Some(Some(mmr)) = self.lookup.mmr(&name, now) else {
+                continue;
+            };
+            let low = min.is_some_and(|m| mmr < m);
+            let high = max.is_some_and(|m| mmr > m);
+            if !(low || high)
+                || self
+                    .gated
+                    .get(&name)
+                    .is_some_and(|at| now.saturating_sub(*at) < 5)
+            {
+                continue;
+            }
+            self.gated.insert(name.clone(), now);
+            let range = match (min, max) {
+                (Some(a), Some(b)) => format!("{a}-{b}"),
+                (Some(a), None) => format!("{a}+"),
+                (None, Some(b)) => format!("≤{b}"),
+                (None, None) => unreachable!(),
+            };
+            self.replies.push(
+                &crate::i18n::both(
+                    format!("{name}: this lobby is for MMR {range} (you have {mmr})."),
+                    format!("{name}: это лобби для MMR {range} (у вас {mmr})."),
+                ),
+                milliseconds,
+            );
+            self.admin_actions
+                .push(super::lobby_admin::Action::Kick(slot));
+        }
     }
 
     pub fn process(
@@ -176,6 +238,7 @@ impl Chat {
                 self.admin_actions.extend(actions);
                 outcome.activity.get_or_insert(activity);
             }
+            self.gate(engine, lobby, now, milliseconds);
         }
         if let Some(tag) = outcome.stats.take()
             && !self.stats.contains(&tag)

@@ -15,6 +15,10 @@ pub struct Welcome {
     /// Whisper the greeting to the arriving player (`/w Name#1234 …`) instead
     /// of saying it in the lobby. Lines with the player's stats stay public.
     pub whisper: bool,
+    /// Lobby gate by w3ladder MMR: players below `min_mmr` or above `max_mmr`
+    /// are told and kicked. Lobby admins and unknown ratings pass.
+    pub min_mmr: Option<i32>,
+    pub max_mmr: Option<i32>,
 }
 
 pub const LINES: usize = 6;
@@ -33,6 +37,8 @@ impl Default for Welcome {
             .join("\n"),
             second: String::new(),
             whisper: false,
+            min_mmr: None,
+            max_mmr: None,
         }
     }
 }
@@ -232,6 +238,8 @@ mod tests {
             message: "Hi #{playername}".into(),
             second: String::new(),
             whisper: false,
+            min_mmr: None,
+            max_mmr: None,
         };
         assert_eq!(
             queue
@@ -326,6 +334,8 @@ mod tests {
             message: "Hello\n#{playername}: {stats}".into(),
             second: String::new(),
             whisper: false,
+            min_mmr: None,
+            max_mmr: None,
         };
         let mut queue = Announcements::default();
         let mut lookup = crate::ladder::lookup::Lookup::default();
@@ -376,6 +386,8 @@ mod tests {
             message: "Hello\n#{playername}: rated".into(),
             second: String::new(),
             whisper: true,
+            min_mmr: None,
+            max_mmr: None,
         };
         let mut queue = Announcements::default();
         let mut lookup = crate::ladder::lookup::Lookup::default();
