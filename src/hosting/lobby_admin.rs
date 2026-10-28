@@ -163,6 +163,9 @@ pub(super) struct LobbyAdmin {
     lobby: String,
     hold: Option<String>,
     reserve: Option<Reserve>,
+    /// A slot closed for a reservation that has ended: the start waits until
+    /// Warcraft confirms it is open again, so no game starts one seat short.
+    reopen: Option<u8>,
     settle_until: u64,
 }
 
@@ -196,7 +199,7 @@ impl LobbyAdmin {
 
     /// Whether auto start and start votes must wait.
     pub fn holds_start(&self) -> bool {
-        self.hold.is_some() || self.reserve.is_some()
+        self.hold.is_some() || self.reserve.is_some() || self.reopen.is_some()
     }
 
     fn settled(&mut self, now: u64) -> bool {
@@ -230,6 +233,17 @@ impl LobbyAdmin {
             ));
             self.hold = None;
         }
+        if let Some(slot) = self.reopen {
+            let closed = lobby
+                .players
+                .iter()
+                .any(|p| p.slot == slot && p.slot_status == 1);
+            if !closed {
+                self.reopen = None;
+            } else if self.settled(now) {
+                actions.push(Action::Open(slot));
+            }
+        }
         let Some(reserve) = &self.reserve else {
             return (actions, lines);
         };
@@ -251,6 +265,7 @@ impl LobbyAdmin {
             });
             if closed {
                 actions.push(Action::Open(reserved));
+                self.reopen = Some(reserved);
             }
             self.reserve = None;
             return (actions, lines);
@@ -374,6 +389,9 @@ impl LobbyAdmin {
                         .players
                         .iter()
                         .any(|p| p.slot == reserve.slot && p.slot_status == 1);
+                    if closed {
+                        self.reopen = Some(reserve.slot);
+                    }
                     (
                         both(
                             format!("Reservation for {} cancelled, slot open.", reserve.player),

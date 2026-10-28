@@ -106,6 +106,9 @@ fn open_cancels_the_reservation_and_the_admin_leaving_does_too() {
     closed.players[4].slot_status = 1;
     let (_, actions, _) = a.handle(&say("Boss#1", "?open"), &closed, 2).unwrap();
     assert_eq!(actions, vec![Action::Open(4)]);
+    // The start waits until Warcraft shows the slot open again.
+    assert!(a.holds_start());
+    a.observe(&lobby, 2);
     assert!(!a.holds_start());
     a.handle(&say("Boss#1", "?reserve Friend#9"), &lobby, 3)
         .unwrap();
@@ -113,6 +116,10 @@ fn open_cancels_the_reservation_and_the_admin_leaving_does_too() {
     gone.players[4].slot_status = 1;
     let (actions, _) = a.observe(&gone, 4);
     assert_eq!(actions, vec![Action::Open(4)]);
+    assert!(a.holds_start());
+    // Still closed later: the bot asks again.
+    assert_eq!(a.observe(&gone, 10).0, vec![Action::Open(4)]);
+    a.observe(&room(&[]), 11);
     assert!(!a.holds_start());
 }
 
