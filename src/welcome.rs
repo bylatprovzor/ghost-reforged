@@ -16,9 +16,13 @@ pub struct Welcome {
     /// of saying it in the lobby. Lines with the player's stats stay public.
     pub whisper: bool,
     /// Lobby gate by w3ladder MMR: players below `min_mmr` or above `max_mmr`
-    /// are told and kicked. Lobby admins and unknown ratings pass.
+    /// are told and kicked. Lobby admins pass, and so does anyone while the
+    /// site cannot be asked.
     pub min_mmr: Option<i32>,
     pub max_mmr: Option<i32>,
+    /// Players without a ranked W3Ladder game (no record or `mmr_games` 0)
+    /// pass the gate whatever their MMR; `false` turns them away instead.
+    pub allow_unrated: bool,
 }
 
 pub const LINES: usize = 6;
@@ -39,11 +43,46 @@ impl Default for Welcome {
             whisper: false,
             min_mmr: None,
             max_mmr: None,
+            allow_unrated: true,
         }
     }
 }
 
 impl Welcome {
+    /// Whether the lobby gate checks ratings at all.
+    pub fn gates(&self) -> bool {
+        self.min_mmr.is_some() || self.max_mmr.is_some() || !self.allow_unrated
+    }
+
+    /// The line telling `name` why this lobby is not theirs, or `None` when
+    /// they may stay.
+    pub fn turns_away(&self, name: &str, rating: crate::ladder::lookup::Rating) -> Option<String> {
+        if rating.unrated() {
+            return (!self.allow_unrated).then(|| {
+                crate::i18n::both(
+                    format!("{name}: this lobby is for rated players. Without a rating, join the other W3Ladder lobby."),
+                    format!("{name}: это лобби для игроков с рейтингом. Без рейтинга заходите во второе лобби W3Ladder."),
+                )
+            });
+        }
+        let mmr = rating.mmr?;
+        let low = self.min_mmr.is_some_and(|m| mmr < m);
+        let high = self.max_mmr.is_some_and(|m| mmr > m);
+        if !(low || high) {
+            return None;
+        }
+        let range = match (self.min_mmr, self.max_mmr) {
+            (Some(a), Some(b)) => format!("{a}-{b}"),
+            (Some(a), None) => format!("{a}+"),
+            (None, Some(b)) => format!("≤{b}"),
+            (None, None) => return None,
+        };
+        Some(crate::i18n::both(
+            format!("{name}: this lobby is for MMR {range} (you have {mmr})."),
+            format!("{name}: это лобби для MMR {range} (у вас {mmr})."),
+        ))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let lines = self.lines();
         if self.message.trim().is_empty()
@@ -240,6 +279,7 @@ mod tests {
             whisper: false,
             min_mmr: None,
             max_mmr: None,
+            allow_unrated: true,
         };
         assert_eq!(
             queue
@@ -336,6 +376,7 @@ mod tests {
             whisper: false,
             min_mmr: None,
             max_mmr: None,
+            allow_unrated: true,
         };
         let mut queue = Announcements::default();
         let mut lookup = crate::ladder::lookup::Lookup::default();
@@ -388,6 +429,7 @@ mod tests {
             whisper: true,
             min_mmr: None,
             max_mmr: None,
+            allow_unrated: true,
         };
         let mut queue = Announcements::default();
         let mut lookup = crate::ladder::lookup::Lookup::default();
@@ -410,5 +452,54 @@ mod tests {
             text(queue.next(&roster, &settings, 3, &mut lookup).unwrap()),
             "Two#2: rated"
         );
+    }
+
+    #[test]
+    fn the_gate_takes_ranges_and_unrated_players_as_configured() {
+        use crate::ladder::lookup::Rating;
+        let rated = |mmr| Rating {
+            mmr: Some(mmr),
+            games: Some(12),
+        };
+        let unrated = Rating {
+            mmr: Some(1500),
+            games: Some(0),
+        };
+        // Our lobby: 1500 and up, rated players only.
+        let ours = Welcome {
+            min_mmr: Some(1500),
+            allow_unrated: false,
+            ..Welcome::default()
+        };
+        assert!(ours.gates());
+        assert!(ours.turns_away("A#1", rated(1500)).is_none());
+        let low = ours.turns_away("A#1", rated(1499)).unwrap();
+        assert!(low.contains("MMR 1500+ (you have 1499)") && low.contains("у вас 1499"));
+        assert!(
+            ours.turns_away("A#1", unrated)
+                .unwrap()
+                .starts_with("A#1: this lobby is for rated players")
+        );
+        let no_mmr = Rating {
+            mmr: None,
+            games: None,
+        };
+        assert!(ours.turns_away("A#1", no_mmr).is_some());
+        // The other lobby: up to 1499, unrated players welcome whatever their MMR.
+        let theirs = Welcome {
+            max_mmr: Some(1499),
+            ..Welcome::default()
+        };
+        assert!(theirs.turns_away("A#1", unrated).is_none());
+        assert!(
+            theirs
+                .turns_away("A#1", rated(1500))
+                .unwrap()
+                .contains("≤1499")
+        );
+        assert!(!Welcome::default().gates());
+        // An older profile without the key keeps letting unrated players in.
+        let old: Welcome = serde_json::from_str(r#"{"min_mmr":1500}"#).unwrap();
+        assert!(old.allow_unrated && old.turns_away("A#1", unrated).is_none());
     }
 }

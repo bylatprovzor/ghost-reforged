@@ -135,7 +135,8 @@ impl Chat {
         self.tracker.started(name, &mut self.history, unix_now());
     }
 
-    /// Turns away players whose w3ladder MMR is outside the lobby's range.
+    /// Turns away players whose w3ladder MMR is outside the lobby's range,
+    /// and players without a rating when the lobby does not take them.
     fn gate(
         &mut self,
         engine: &Engine,
@@ -143,8 +144,8 @@ impl Chat {
         now: u64,
         milliseconds: u64,
     ) {
-        let (min, max) = (engine.config.welcome.min_mmr, engine.config.welcome.max_mmr);
-        if min.is_none() && max.is_none() {
+        let welcome = &engine.config.welcome;
+        if !welcome.gates() {
             self.gated.clear();
             return;
         }
@@ -162,33 +163,21 @@ impl Chat {
             if self.admin.admins.contains(&name) {
                 continue;
             }
-            let Some(Some(mmr)) = self.lookup.mmr(&name, now) else {
+            let Some(Some(rating)) = self.lookup.rating(&name, now) else {
                 continue;
             };
-            let low = min.is_some_and(|m| mmr < m);
-            let high = max.is_some_and(|m| mmr > m);
-            if !(low || high)
-                || self
-                    .gated
-                    .get(&name)
-                    .is_some_and(|at| now.saturating_sub(*at) < 5)
+            let Some(line) = welcome.turns_away(&name, rating) else {
+                continue;
+            };
+            if self
+                .gated
+                .get(&name)
+                .is_some_and(|at| now.saturating_sub(*at) < 5)
             {
                 continue;
             }
             self.gated.insert(name.clone(), now);
-            let range = match (min, max) {
-                (Some(a), Some(b)) => format!("{a}-{b}"),
-                (Some(a), None) => format!("{a}+"),
-                (None, Some(b)) => format!("≤{b}"),
-                (None, None) => unreachable!(),
-            };
-            self.replies.push(
-                &crate::i18n::both(
-                    format!("{name}: this lobby is for MMR {range} (you have {mmr})."),
-                    format!("{name}: это лобби для MMR {range} (у вас {mmr})."),
-                ),
-                milliseconds,
-            );
+            self.replies.push(&line, milliseconds);
             self.admin_actions
                 .push(super::lobby_admin::Action::Kick(slot));
         }

@@ -106,6 +106,7 @@ fn leaving_or_rehosting_discards_results_and_welcome_waits_for_the_same_record()
         whisper: false,
         min_mmr: None,
         max_mmr: None,
+        allow_unrated: true,
     };
     welcome.joined("Player#1234");
     assert!(welcome.next(&roster, &settings, 0, &mut lookup).is_none());
@@ -234,4 +235,16 @@ fn mmr_is_pending_then_known_for_the_lobby_gate() {
     }))
     .unwrap();
     assert_eq!(lookup.mmr("Player#1234", 1), Some(Some(1620)));
+    let rating = lookup.rating("Player#1234", 1).unwrap().unwrap();
+    assert_eq!(rating.games, Some(9));
+    assert!(!rating.unrated());
+    // A player the site has never seen counts as unrated for the gate.
+    let new = decode(404, r#"{"error":"player_not_found"}"#, "New#1234").unwrap();
+    assert!(
+        Rating {
+            mmr: new.mmr,
+            games: new.mmr_games
+        }
+        .unrated()
+    );
 }

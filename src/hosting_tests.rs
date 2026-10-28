@@ -450,6 +450,7 @@ fn live_settings_change_the_current_lobby_without_recreating_it() {
             whisper: false,
             min_mmr: None,
             max_mmr: None,
+            allow_unrated: true,
         },
     };
     let commands = dispatch(

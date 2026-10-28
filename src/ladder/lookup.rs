@@ -61,11 +61,25 @@ fn decode(status: u16, body: &str, tag: &str) -> Result<Profile, Error> {
     Ok(profile)
 }
 
+/// A player's W3Ladder pool rating as `GET /v1/players` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rating {
+    pub mmr: Option<i32>,
+    pub games: Option<u32>,
+}
+
+impl Rating {
+    /// No ranked W3Ladder game yet: no record at all, `mmr_games` 0 or no MMR.
+    pub fn unrated(&self) -> bool {
+        self.games == Some(0) || self.mmr.is_none()
+    }
+}
+
 struct Entry {
     job: Option<Receiver<Result<Profile, Error>>>,
     since: u64,
     text: String,
-    mmr: Option<i32>,
+    rating: Option<Rating>,
 }
 
 #[derive(Default)]
@@ -127,13 +141,16 @@ impl Lookup {
                 job,
                 since: now,
                 text: unknown.into(),
-                mmr: None,
+                rating: None,
             }
         });
         if let Some(rx) = &entry.job {
             match rx.try_recv() {
                 Ok(result) => {
-                    entry.mmr = result.as_ref().ok().and_then(|p| p.mmr);
+                    entry.rating = result.as_ref().ok().map(|p| Rating {
+                        mmr: p.mmr,
+                        games: p.mmr_games,
+                    });
                     entry.text = result.map_or_else(
                         |_| unknown.into(),
                         |p| {
@@ -164,8 +181,14 @@ impl Lookup {
     /// The player's w3ladder MMR: `None` while the lookup is pending,
     /// `Some(None)` when it is unknown.
     pub fn mmr(&mut self, tag: &str, now: u64) -> Option<Option<i32>> {
+        Some(self.rating(tag, now)?.and_then(|r| r.mmr))
+    }
+
+    /// The player's W3Ladder rating: `None` while the lookup is pending,
+    /// `Some(None)` when the site could not be asked.
+    pub fn rating(&mut self, tag: &str, now: u64) -> Option<Option<Rating>> {
         self.query(tag, now)?;
-        Some(self.entries.get(tag).and_then(|e| e.mmr))
+        Some(self.entries.get(tag).and_then(|e| e.rating))
     }
 }
 
