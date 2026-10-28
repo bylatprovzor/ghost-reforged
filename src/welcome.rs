@@ -20,8 +20,9 @@ pub struct Welcome {
     /// site cannot be asked.
     pub min_mmr: Option<i32>,
     pub max_mmr: Option<i32>,
-    /// Players without a ranked W3Ladder game (no record or `mmr_games` 0)
-    /// pass the gate whatever their MMR; `false` turns them away instead.
+    /// Players without a W3Ladder rating yet (no record, or still provisional:
+    /// fewer than 3 rated games) pass the gate whatever their MMR; `false`
+    /// turns them away instead.
     pub allow_unrated: bool,
 }
 
@@ -465,6 +466,15 @@ mod tests {
             mmr: Some(1500),
             games: Some(0),
         };
+        // Two rated games are still provisional on the site: no rating yet.
+        let provisional = Rating {
+            mmr: Some(1620),
+            games: Some(2),
+        };
+        let ranked = Rating {
+            mmr: Some(1620),
+            games: Some(3),
+        };
         // Our lobby: 1500 and up, rated players only.
         let ours = Welcome {
             min_mmr: Some(1500),
@@ -485,12 +495,20 @@ mod tests {
             games: None,
         };
         assert!(ours.turns_away("A#1", no_mmr).is_some());
+        assert!(
+            ours.turns_away("A#1", provisional)
+                .unwrap()
+                .contains("rated players")
+        );
+        assert!(ours.turns_away("A#1", ranked).is_none());
         // The other lobby: up to 1499, unrated players welcome whatever their MMR.
         let theirs = Welcome {
             max_mmr: Some(1499),
             ..Welcome::default()
         };
         assert!(theirs.turns_away("A#1", unrated).is_none());
+        assert!(theirs.turns_away("A#1", provisional).is_none());
+        assert!(theirs.turns_away("A#1", ranked).unwrap().contains("≤1499"));
         assert!(
             theirs
                 .turns_away("A#1", rated(1500))

@@ -69,9 +69,14 @@ pub struct Rating {
 }
 
 impl Rating {
-    /// No ranked W3Ladder game yet: no record at all, `mmr_games` 0 or no MMR.
+    /// No W3Ladder rating yet: no record at all, no MMR, or fewer rated games
+    /// than the site needs to rank a player (its `provisional` flag). Both host
+    /// bots read players this way: the rating starts with the fourth game.
     pub fn unrated(&self) -> bool {
-        self.games == Some(0) || self.mmr.is_none()
+        self.mmr.is_none()
+            || self
+                .games
+                .is_some_and(|games| games < super::MINIMUM_MMR_GAMES)
     }
 }
 
