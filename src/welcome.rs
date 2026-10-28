@@ -332,7 +332,7 @@ mod tests {
         // A greeting without personal lines still greets each lobby once.
         let plain = Welcome {
             message: "Hi".into(),
-            ..settings
+            ..settings.clone()
         };
         assert!(text(queue.next(&roster, &settings, later + 1, &mut lookup).unwrap()).starts_with("One: "));
         queue.joined("Two");
