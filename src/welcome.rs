@@ -98,6 +98,16 @@ pub struct Announcements {
     follow: VecDeque<(String, String)>,
     last_sent: Option<u64>,
     last_detected: Option<Instant>,
+    /// Lobby and time of the last shared greeting.
+    greeted: Option<(String, u64)>,
+}
+
+/// Lines naming the player or their stats go to every arrival; the shared
+/// greeting is repeated in the same lobby at most this often.
+pub const GREETING_REPEAT_SECONDS: u64 = 300;
+
+fn personal(line: &str) -> bool {
+    line.contains("#{playername}") || line.contains("{stats}")
 }
 
 impl Announcements {
@@ -161,11 +171,21 @@ impl Announcements {
                 };
                 self.last_sent = Some(now);
                 self.last_detected = Some(detected);
+                let greet = self.greeted.as_ref().is_none_or(|(lobby_name, at)| {
+                    *lobby_name != lobby.lobby_name
+                        || now.saturating_sub(*at) >= GREETING_REPEAT_SECONDS
+                });
+                if greet {
+                    self.greeted = Some((lobby.lobby_name.clone(), now));
+                }
                 let mut lines = settings
                     .lines()
                     .into_iter()
+                    .filter(|l| greet || personal(l))
                     .map(|l| Welcome::fill(l, &name, &stats));
-                let first = lines.next()?;
+                let Some(first) = lines.next() else {
+                    continue;
+                };
                 self.follow.extend(lines.map(|l| (name.clone(), l)));
                 return Some(Command::new(
                     "SendGameChatMessage",
@@ -279,5 +299,46 @@ mod tests {
         queue.next(&roster, &settings, 5, &mut lookup).unwrap();
         queue.left("One");
         assert!(queue.next(&roster, &settings, 6, &mut lookup).is_none());
+    }
+    #[test]
+    fn the_shared_greeting_is_not_repeated_for_every_arrival() {
+        let roster: Lobby = serde_json::from_value(json!({"isHost":true,"lobbyName":"Test #1","mapData":{"mapPath":"map.w3x"},"players":[
+            {"name":"One","slot":1,"slotStatus":2,"slotType":0,"team":0,"isSelf":false,"isObserver":false,"teamChangeEnabled":true},
+            {"name":"Two","slot":2,"slotStatus":2,"slotType":0,"team":1,"isSelf":false,"isObserver":false,"teamChangeEnabled":true}
+        ]}))
+        .unwrap();
+        let settings = Welcome {
+            enabled: true,
+            message: "Hello\n#{playername}: {stats}".into(),
+            second: String::new(),
+        };
+        let mut queue = Announcements::default();
+        let mut lookup = crate::ladder::lookup::Lookup::default();
+        let text = |c: Command| c.payload["content"].as_str().unwrap().to_owned();
+        queue.joined("One");
+        queue.joined("Two");
+        assert_eq!(
+            text(queue.next(&roster, &settings, 0, &mut lookup).unwrap()),
+            "Hello"
+        );
+        assert!(text(queue.next(&roster, &settings, 1, &mut lookup).unwrap()).starts_with("One: "));
+        assert!(text(queue.next(&roster, &settings, 2, &mut lookup).unwrap()).starts_with("Two: "));
+        queue.joined("One");
+        let later = GREETING_REPEAT_SECONDS + 1;
+        assert_eq!(
+            text(queue.next(&roster, &settings, later, &mut lookup).unwrap()),
+            "Hello"
+        );
+        // A greeting without personal lines still greets each lobby once.
+        let plain = Welcome {
+            message: "Hi".into(),
+            ..settings
+        };
+        queue.joined("Two");
+        assert!(
+            queue
+                .next(&roster, &plain, later + 5, &mut lookup)
+                .is_none()
+        );
     }
 }
