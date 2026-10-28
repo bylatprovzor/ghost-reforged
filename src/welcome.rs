@@ -334,6 +334,7 @@ mod tests {
             message: "Hi".into(),
             ..settings
         };
+        assert!(text(queue.next(&roster, &settings, later + 1, &mut lookup).unwrap()).starts_with("One: "));
         queue.joined("Two");
         assert!(
             queue
