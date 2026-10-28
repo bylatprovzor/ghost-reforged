@@ -18,7 +18,7 @@ fn pending(lookup: &mut Lookup, now: u64) -> mpsc::Sender<Result<Profile, Error>
             job: Some(rx),
             since: now,
             text: UNKNOWN.into(),
-            mmr: None,
+            rating: None,
         },
     );
     tx
