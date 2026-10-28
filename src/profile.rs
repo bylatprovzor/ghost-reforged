@@ -106,7 +106,7 @@ impl Default for Profile {
             commands: Default::default(),
             welcome: Default::default(),
             rehost_delay_seconds: rehost_delay(),
-            empty_rehost_seconds: 0,
+            empty_rehost_seconds: 600,
             startup_timeout_seconds: crate::config::default_startup_timeout(),
             creation_timeout_seconds: crate::config::default_creation_timeout(),
         }
