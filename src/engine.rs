@@ -59,6 +59,7 @@ pub struct Engine {
     session_replaced: bool,
     relay_hold: bool,
     relay_waiting: bool,
+    admin_hold: bool,
 }
 
 impl Engine {
@@ -92,7 +93,14 @@ impl Engine {
             session_replaced: false,
             relay_hold: false,
             relay_waiting: false,
+            admin_hold: false,
         }
+    }
+
+    /// A lobby admin stopped the start or is holding a slot: no countdown,
+    /// no vote start, and a running countdown is cancelled.
+    pub fn set_admin_hold(&mut self, hold: bool) {
+        self.admin_hold = hold;
     }
 
     /// Another host of the relay owns the open lobby or is ahead in the queue:
@@ -504,6 +512,7 @@ impl Engine {
                     .local()
                     .is_some_and(|p| self.config.host_mode != HostMode::Observer || p.is_observer)
                     && lobby.occupied_players() > 0
+                    && !self.admin_hold
                     && self.ladder_allows_start(lobby)
             })
     }
@@ -647,7 +656,7 @@ impl Engine {
                 } else {
                     lobby.humans(self.config.count_host) >= self.config.min_players as usize
                 });
-        if !enough || !self.ladder_allows_start(lobby) {
+        if !enough || self.admin_hold || !self.ladder_allows_start(lobby) {
             if matches!(self.phase, Phase::Starting(_)) {
                 self.notice = Some(format!(
                     "Countdown cancelled: {}.",
@@ -668,10 +677,12 @@ impl Engine {
             let counting = matches!(self.phase, Phase::Countdown(_));
             self.phase = Phase::Lobby;
             if counting && self.config.announce_countdown {
-                return vec![Command::new(
-                    "SendGameChatMessage",
-                    json!({"content": "Start cancelled: waiting for players. / Старт отменён: ждём игроков."}),
-                )];
+                let content = if self.admin_hold {
+                    "Start held by a lobby admin. / Старт остановлен админом лобби."
+                } else {
+                    "Start cancelled: waiting for players. / Старт отменён: ждём игроков."
+                };
+                return vec![Command::new("SendGameChatMessage", json!({"content": content}))];
             }
             if let Some(empty_since) = self.empty_since
                 && self.config.empty_rehost_seconds > 0

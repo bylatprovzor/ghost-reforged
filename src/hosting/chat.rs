@@ -78,6 +78,8 @@ pub(super) struct Chat {
     color: Option<PendingColor>,
     pub lookup: crate::ladder::lookup::Lookup,
     stats: Vec<String>,
+    admin: super::lobby_admin::LobbyAdmin,
+    admin_actions: Vec<super::lobby_admin::Action>,
 }
 impl Chat {
     pub fn new(path: Option<&Path>) -> Self {
@@ -89,7 +91,17 @@ impl Chat {
             color: None,
             lookup: Default::default(),
             stats: Vec::new(),
+            admin: super::lobby_admin::LobbyAdmin::new(path.and_then(Path::parent)),
+            admin_actions: Vec::new(),
         }
+    }
+    /// A lobby admin holds the start (?stop or a reserved slot).
+    pub fn admin_hold(&self) -> bool {
+        self.admin.holds_start()
+    }
+    /// Kicks and slot edits requested by lobby admins since the last call.
+    pub fn take_admin_actions(&mut self) -> Vec<super::lobby_admin::Action> {
+        std::mem::take(&mut self.admin_actions)
     }
     pub fn apply_settings(&mut self, settings: &crate::commands::CommandSettings) {
         self.commands.apply_settings(settings);
@@ -103,6 +115,7 @@ impl Chat {
         self.color = None;
         self.lookup = Default::default();
         self.stats.clear();
+        self.admin_actions.clear();
     }
     pub fn warning(&mut self) -> Option<String> {
         self.history.warning()
@@ -149,6 +162,20 @@ impl Chat {
             && let Some(text) = reply.payload["content"].as_str()
         {
             self.replies.push(text, milliseconds);
+        }
+        if let Some(lobby) = lobby {
+            let (actions, lines) = self.admin.observe(lobby, now);
+            self.admin_actions.extend(actions);
+            for line in lines {
+                self.replies.push(&line, milliseconds);
+            }
+            if let Some(event) = event
+                && let Some((reply, actions, activity)) = self.admin.handle(event, lobby, now)
+            {
+                self.replies.push(&reply, milliseconds);
+                self.admin_actions.extend(actions);
+                outcome.activity.get_or_insert(activity);
+            }
         }
         if let Some(tag) = outcome.stats.take()
             && !self.stats.contains(&tag)

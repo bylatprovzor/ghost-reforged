@@ -322,6 +322,37 @@ pub(super) fn run(
                 let _ = tx.send(Event::Activity(Activity::Command(line)));
             }
             commands.extend(outcome.reply);
+            engine.set_admin_hold(chat.admin_hold());
+            for action in chat.take_admin_actions() {
+                use super::lobby_admin::Action;
+                let Some(lobby) = engine.owned_lobby(now) else {
+                    continue;
+                };
+                let snapshot = super::summarize(lobby, false, true);
+                let accepted = match action {
+                    Action::Kick(slot) => snapshot
+                        .kick_target(slot)
+                        .and_then(|target| manual_kick.request(target, &engine, now))
+                        .is_some(),
+                    Action::Open(slot) | Action::Close(slot) => {
+                        let wanted = if matches!(action, Action::Open(_)) {
+                            slots::SlotAction::Open
+                        } else {
+                            slots::SlotAction::Close
+                        };
+                        snapshot
+                            .slot_actions(slot)
+                            .into_iter()
+                            .find(|(kind, _)| *kind == wanted)
+                            .is_some_and(|(_, request)| slot_edit.request(request, &engine, now))
+                    }
+                };
+                if !accepted {
+                    let _ = tx.send(Event::Activity(Activity::Command(format!(
+                        "Lobby admin · {action:?} · not applied"
+                    ))));
+                }
+            }
             if let Some(target) = outcome.kick {
                 kick_requested = Some((target, now, kick::RefreshGate::default()));
             }

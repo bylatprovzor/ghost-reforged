@@ -10,6 +10,7 @@ mod health;
 pub use health::Health;
 mod kick;
 mod ladder;
+mod lobby_admin;
 mod login_recovery;
 mod pending;
 mod priority;
