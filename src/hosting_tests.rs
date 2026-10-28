@@ -447,6 +447,7 @@ fn live_settings_change_the_current_lobby_without_recreating_it() {
             enabled: true,
             message: "Hello #{playername}".into(),
             second: String::new(),
+            whisper: false,
         },
     };
     let commands = dispatch(

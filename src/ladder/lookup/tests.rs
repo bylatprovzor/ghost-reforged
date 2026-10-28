@@ -102,6 +102,7 @@ fn leaving_or_rehosting_discards_results_and_welcome_waits_for_the_same_record()
         enabled: true,
         message: "Welcome #{playername}! {stats}".into(),
         second: String::new(),
+        whisper: false,
     };
     welcome.joined("Player#1234");
     assert!(welcome.next(&roster, &settings, 0, &mut lookup).is_none());

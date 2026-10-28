@@ -12,6 +12,9 @@ pub struct Welcome {
     /// More lines sent after `message`, for example the same greeting in
     /// another language. Empty sends only `message`.
     pub second: String,
+    /// Whisper the greeting to the arriving player (`/w Name#1234 …`) instead
+    /// of saying it in the lobby. Lines with the player's stats stay public.
+    pub whisper: bool,
 }
 
 pub const LINES: usize = 6;
@@ -29,6 +32,7 @@ impl Default for Welcome {
             ]
             .join("\n"),
             second: String::new(),
+            whisper: false,
         }
     }
 }
@@ -171,18 +175,27 @@ impl Announcements {
                 };
                 self.last_sent = Some(now);
                 self.last_detected = Some(detected);
-                let greet = self.greeted.as_ref().is_none_or(|(lobby_name, at)| {
-                    *lobby_name != lobby.lobby_name
-                        || now.saturating_sub(*at) >= GREETING_REPEAT_SECONDS
-                });
-                if greet {
+                let whisper = settings.whisper;
+                let greet = whisper
+                    || self.greeted.as_ref().is_none_or(|(lobby_name, at)| {
+                        *lobby_name != lobby.lobby_name
+                            || now.saturating_sub(*at) >= GREETING_REPEAT_SECONDS
+                    });
+                if greet && !whisper {
                     self.greeted = Some((lobby.lobby_name.clone(), now));
                 }
                 let mut lines = settings
                     .lines()
                     .into_iter()
                     .filter(|l| greet || personal(l))
-                    .map(|l| Welcome::fill(l, &name, &stats));
+                    .map(|l| {
+                        let text = Welcome::fill(l, &name, &stats);
+                        if whisper && !personal(l) {
+                            format!("/w {name} {}", text.trim_start())
+                        } else {
+                            text
+                        }
+                    });
                 let Some(first) = lines.next() else {
                     continue;
                 };
@@ -218,6 +231,7 @@ mod tests {
             enabled: true,
             message: "Hi #{playername}".into(),
             second: String::new(),
+            whisper: false,
         };
         assert_eq!(
             queue
@@ -311,6 +325,7 @@ mod tests {
             enabled: true,
             message: "Hello\n#{playername}: {stats}".into(),
             second: String::new(),
+            whisper: false,
         };
         let mut queue = Announcements::default();
         let mut lookup = crate::ladder::lookup::Lookup::default();
@@ -334,12 +349,54 @@ mod tests {
             message: "Hi".into(),
             ..settings.clone()
         };
-        assert!(text(queue.next(&roster, &settings, later + 1, &mut lookup).unwrap()).starts_with("One: "));
+        assert!(
+            text(
+                queue
+                    .next(&roster, &settings, later + 1, &mut lookup)
+                    .unwrap()
+            )
+            .starts_with("One: ")
+        );
         queue.joined("Two");
         assert!(
             queue
                 .next(&roster, &plain, later + 5, &mut lookup)
                 .is_none()
+        );
+    }
+    #[test]
+    fn a_whispered_greeting_reaches_only_the_arrival() {
+        let roster: Lobby = serde_json::from_value(json!({"isHost":true,"lobbyName":"Test #1","mapData":{"mapPath":"map.w3x"},"players":[
+            {"name":"One#1","slot":1,"slotStatus":2,"slotType":0,"team":0,"isSelf":false,"isObserver":false,"teamChangeEnabled":true},
+            {"name":"Two#2","slot":2,"slotStatus":2,"slotType":0,"team":1,"isSelf":false,"isObserver":false,"teamChangeEnabled":true}
+        ]}))
+        .unwrap();
+        let settings = Welcome {
+            enabled: true,
+            message: "Hello\n#{playername}: rated".into(),
+            second: String::new(),
+            whisper: true,
+        };
+        let mut queue = Announcements::default();
+        let mut lookup = crate::ladder::lookup::Lookup::default();
+        let text = |c: Command| c.payload["content"].as_str().unwrap().to_owned();
+        queue.joined("One#1");
+        queue.joined("Two#2");
+        assert_eq!(
+            text(queue.next(&roster, &settings, 0, &mut lookup).unwrap()),
+            "/w One#1 Hello"
+        );
+        assert_eq!(
+            text(queue.next(&roster, &settings, 1, &mut lookup).unwrap()),
+            "One#1: rated"
+        );
+        assert_eq!(
+            text(queue.next(&roster, &settings, 2, &mut lookup).unwrap()),
+            "/w Two#2 Hello"
+        );
+        assert_eq!(
+            text(queue.next(&roster, &settings, 3, &mut lookup).unwrap()),
+            "Two#2: rated"
         );
     }
 }
